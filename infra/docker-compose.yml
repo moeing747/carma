@@ -53,6 +53,18 @@ services:
       retries: 12
       start_period: 10s
 
+  # One-shot schema migration; the API waits for it to complete.
+  migrate:
+    build:
+      context: ../backend
+    restart: 'no'
+    command: ['carma-migrate']
+    environment:
+      DATABASE_URL: postgres://carma:carma@postgis:5432/carma
+    depends_on:
+      postgis:
+        condition: service_healthy
+
   api:
     build:
       context: ../backend
@@ -75,6 +87,8 @@ services:
         condition: service_healthy
       postgis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
 volumes:
   kafka_data:

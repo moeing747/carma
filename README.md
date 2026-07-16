@@ -9,13 +9,19 @@ Real-time Berlin transit monitoring and network-planning demo. Carma ingests the
 ## Quickstart
 
 ```sh
-# infrastructure + API
+# infrastructure + API (schema migrations run automatically as a one-shot job)
 docker compose -f infra/docker-compose.yml up -d
 
 # backend, hackable
 cd backend
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 .venv/bin/pytest
+
+# static GTFS: migrate (no-op after compose up) and load a feed zip
+# VBB's feed: https://www.vbb.de/vbb-services/api-open-data/datensaetze/ (GTFS static)
+export DATABASE_URL=postgres://carma:carma@localhost:5432/carma
+.venv/bin/carma-migrate
+.venv/bin/carma-load-gtfs path/to/gtfs.zip
 
 # frontend
 cd frontend

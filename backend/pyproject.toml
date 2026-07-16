@@ -22,13 +22,21 @@ dev = [
     "ruff>=0.5",
     "import-linter>=2.0",
     "types-protobuf>=5.26",
+    "testcontainers[postgres]>=4.7",
 ]
+
+[project.scripts]
+carma-migrate = "carma.entrypoints.cli:migrate"
+carma-load-gtfs = "carma.entrypoints.cli:load_gtfs"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "integration: needs a Docker daemon (Testcontainers PostGIS); skipped when unavailable",
+]
 
 [tool.mypy]
 strict = true

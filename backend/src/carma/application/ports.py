@@ -1,7 +1,8 @@
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Protocol
 
-from carma.domain.models import TripDelay, TripId, VehiclePosition
+from carma.domain.models import Coordinate, ScheduledStop, TripDelay, TripId, VehiclePosition
 
 
 class FeedSource(Protocol):
@@ -16,6 +17,28 @@ class TripDelayRepository(Protocol):
     def save(self, delay: TripDelay) -> None: ...
 
     def latest_for_trip(self, trip_id: TripId) -> TripDelay | None: ...
+
+
+class TripScheduleRepository(Protocol):
+    """Read access to the loaded static GTFS schedule."""
+
+    def active_trip_ids(self, at: datetime) -> frozenset[TripId]:
+        """Trips scheduled to be underway at the given instant.
+
+        A timezone-aware instant is converted to the feed's agency timezone;
+        a naive one is taken as feed-local wall time. Trips from the previous
+        service day whose stop times run past midnight are included (see
+        carma.domain.service_days for the convention).
+        """
+        ...
+
+    def schedule_for_trip(self, trip_id: TripId) -> tuple[ScheduledStop, ...]:
+        """Stop events for a trip, ordered by stop_sequence; empty if unknown."""
+        ...
+
+    def shape_for_trip(self, trip_id: TripId) -> tuple[Coordinate, ...] | None:
+        """The trip's shape as ordered coordinates; None if it has no shape."""
+        ...
 
 
 class PositionProjector(Protocol):
