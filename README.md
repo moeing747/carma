@@ -4,13 +4,18 @@
 
 Real-time Berlin transit monitoring and network-planning demo. Carma ingests the open VBB GTFS-RT feed (TripUpdates for ~6,600 trips), pushes it through a Kafka pipeline into a typed Python core, and renders live vehicles on a WebGL map. The feed publishes **no GPS**: vehicle positions are **derived** by combining the static schedule with live delays and projecting trip progress onto route geometry in PostGIS — which makes positions continuous by construction and smooth animation free. A mock optimization engine sits behind the same port a real Operations-Research engine would use; the engineering shell around it is the point, not the algorithm.
 
-> **Status: under construction.** The hexagonal core, decoder, and map shell are in place; ingest loop, position projection, and the optimization panel are landing next.
+> **Status: under construction.** The hexagonal core, decoder, map shell, and the realtime ingest pipeline (poller → Kafka → PostGIS) are in place; position projection and the optimization panel are landing next.
 
 ## Quickstart
 
 ```sh
-# infrastructure + API (schema migrations run automatically as a one-shot job)
+# full stack: Kafka + PostGIS + API + realtime ingest (poller & consumer);
+# schema migrations run automatically as a one-shot job
 docker compose -f infra/docker-compose.yml up -d
+
+# live delays start landing within a poll cycle (~30s):
+curl localhost:8000/api/v1/feed   # freshness + last snapshot
+curl localhost:8000/health        # liveness, always 200; feed state in body
 
 # backend, hackable
 cd backend
@@ -35,8 +40,8 @@ Hexagonal (ports and adapters), with the boundaries **enforced by tooling**, not
 
 - `backend/src/carma/domain` — pure models (`TripDelay`, `StopTimeEvent`, `VehiclePosition`). Stdlib only, imports no other layer.
 - `backend/src/carma/application` — use cases and ports (`FeedSource`, `TripUpdatePublisher`, `TripDelayRepository`, `PositionProjector`, `OptimizationEngine`). Imports domain only.
-- `backend/src/carma/adapters` — the edges; the GTFS-RT decoder is the only code that knows the wire format.
-- `backend/src/carma/entrypoints` — Flask app factory, HTTP in.
+- `backend/src/carma/adapters` — the edges: GTFS-RT decoder, HTTP feed source, Kafka producer/consumer, PostGIS repositories. Only adapters know wire formats and SQL.
+- `backend/src/carma/entrypoints` — Flask app factory (HTTP in) and the console scripts wiring adapters to use cases (`carma-poll-feed`, `carma-consume-trip-updates`, `carma-migrate`, `carma-load-gtfs`).
 
 [import-linter](https://import-linter.readthedocs.io/) carries a layered contract in `pyproject.toml` and runs in CI: a domain module importing an adapter fails the build. `mypy --strict`, `ruff`, and `pytest` gate every push alongside it.
 

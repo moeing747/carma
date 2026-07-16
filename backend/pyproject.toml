@@ -28,6 +28,8 @@ dev = [
 [project.scripts]
 carma-migrate = "carma.entrypoints.cli:migrate"
 carma-load-gtfs = "carma.entrypoints.cli:load_gtfs"
+carma-poll-feed = "carma.entrypoints.cli:poll_feed"
+carma-consume-trip-updates = "carma.entrypoints.cli:consume_trip_updates"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -35,7 +37,7 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
-    "integration: needs a Docker daemon (Testcontainers PostGIS); skipped when unavailable",
+    "integration: needs a Docker daemon (Testcontainers PostGIS/Kafka); skipped when unavailable",
 ]
 
 [tool.mypy]

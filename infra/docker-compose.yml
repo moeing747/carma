@@ -90,6 +90,39 @@ services:
       migrate:
         condition: service_completed_successfully
 
+  # Polls the live VBB GTFS-RT feed and publishes TripDelays to Kafka.
+  poller:
+    build:
+      context: ../backend
+    restart: unless-stopped
+    command: ['carma-poll-feed']
+    environment:
+      KAFKA_BROKERS: kafka:19092
+      CARMA_FEED_URL: ${CARMA_FEED_URL:-https://production.gtfsrt.vbb.de/data}
+      CARMA_POLL_INTERVAL_SECONDS: ${CARMA_POLL_INTERVAL_SECONDS:-30}
+    depends_on:
+      kafka:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  # Consumes trip-updates into PostGIS (latest TripDelay per trip).
+  consumer:
+    build:
+      context: ../backend
+    restart: unless-stopped
+    command: ['carma-consume-trip-updates']
+    environment:
+      KAFKA_BROKERS: kafka:19092
+      DATABASE_URL: postgres://carma:carma@postgis:5432/carma
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
 volumes:
   kafka_data:
   postgis_data:

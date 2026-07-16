@@ -24,6 +24,15 @@ class TripDelay:
 
 
 @dataclass(frozen=True, slots=True)
+class FeedStatus:
+    """Ingestion progress: when the newest applied snapshot was published
+    upstream and how many trip updates the last applied batch carried."""
+
+    last_snapshot_at: datetime
+    last_entity_count: int
+
+
+@dataclass(frozen=True, slots=True)
 class Coordinate:
     lat: float
     lon: float
