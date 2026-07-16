@@ -50,7 +50,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # commitlint lints the whole pushed range, not just the tip commit.
           fetch-depth: 0
 
-      - uses: wagoid/commitlint-github-action@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      # Lint the full history instead of the pushed range: range-from-event
+      # breaks when a root commit is force-pushed, and full history stays
+      # cheap at this repo's scale.
+      - run: |
+          npm install --no-save @commitlint/cli@19 @commitlint/config-conventional@19
+          ROOT=$(git rev-list --max-parents=0 HEAD)
+          git log -1 --format=%B "$ROOT" | npx commitlint --verbose
+          if [ "$(git rev-list --count HEAD)" -gt 1 ]; then
+            npx commitlint --from "$ROOT" --to HEAD --verbose
+          fi
