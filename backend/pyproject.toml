@@ -1,0 +1,61 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "carma"
+version = "0.1.0"
+description = "Real-time Berlin transit monitoring and network-planning demo"
+requires-python = ">=3.12"
+dependencies = [
+    "flask>=3.0",
+    "confluent-kafka>=2.5",
+    "gtfs-realtime-bindings>=1.0",
+    "psycopg[binary]>=3.2",
+    "pydantic>=2.7",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.2",
+    "mypy>=1.10",
+    "ruff>=0.5",
+    "import-linter>=2.0",
+    "types-protobuf>=5.26",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.mypy]
+strict = true
+mypy_path = "src"
+explicit_package_bases = true
+
+[[tool.mypy.overrides]]
+# gtfs-realtime-bindings ships generated protobuf modules without py.typed.
+module = "google.transit.*"
+ignore_missing_imports = true
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.importlinter]
+root_package = "carma"
+
+[[tool.importlinter.contracts]]
+name = "Hexagonal layering (domain <- application <- adapters <- entrypoints)"
+type = "layers"
+layers = [
+    "carma.entrypoints",
+    "carma.adapters",
+    "carma.application",
+    "carma.domain",
+]

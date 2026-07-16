@@ -1,0 +1,81 @@
+# Carma local stack: Kafka (KRaft, no ZooKeeper) + PostGIS + the Python API.
+#
+# Kafka exposes two listeners:
+#   - EXTERNAL (localhost:9092) for tools/processes on the host
+#   - INTERNAL (kafka:19092)    for services inside this compose network
+
+name: carma
+
+services:
+  kafka:
+    image: apache/kafka:3.8.0
+    ports:
+      - '9092:9092'
+    environment:
+      # KRaft single-node combined controller+broker
+      KAFKA_NODE_ID: '1'
+      KAFKA_PROCESS_ROLES: 'broker,controller'
+      KAFKA_CONTROLLER_QUORUM_VOTERS: '1@localhost:9093'
+      KAFKA_LISTENERS: 'INTERNAL://:19092,EXTERNAL://:9092,CONTROLLER://:9093'
+      KAFKA_ADVERTISED_LISTENERS: 'INTERNAL://kafka:19092,EXTERNAL://localhost:9092'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: 'CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT'
+      KAFKA_CONTROLLER_LISTENER_NAMES: 'CONTROLLER'
+      KAFKA_INTER_BROKER_LISTENER_NAME: 'INTERNAL'
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: '1'
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: '1'
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: '1'
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: '0'
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test:
+        ['CMD-SHELL', '/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list || exit 1']
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+
+  postgis:
+    image: postgis/postgis:16-3.4
+    ports:
+      - '5432:5432'
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-carma}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-carma}
+      POSTGRES_DB: ${POSTGRES_DB:-carma}
+    volumes:
+      - postgis_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-carma} -d ${POSTGRES_DB:-carma}']
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  api:
+    build:
+      context: ../backend
+    restart: unless-stopped
+    ports:
+      - '8000:8000'
+    environment:
+      KAFKA_BROKERS: kafka:19092
+      DATABASE_URL: postgres://carma:carma@postgis:5432/carma
+    healthcheck:
+      # The slim image ships no curl; stdlib urllib does the probe.
+      test:
+        ['CMD', 'python', '-c', "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgis:
+        condition: service_healthy
+
+volumes:
+  kafka_data:
+  postgis_data:
