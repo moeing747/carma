@@ -30,6 +30,7 @@ carma-migrate = "carma.entrypoints.cli:migrate"
 carma-load-gtfs = "carma.entrypoints.cli:load_gtfs"
 carma-poll-feed = "carma.entrypoints.cli:poll_feed"
 carma-consume-trip-updates = "carma.entrypoints.cli:consume_trip_updates"
+carma-project-positions = "carma.entrypoints.cli:project_positions"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -1,13 +1,19 @@
+import json
 import os
-from collections.abc import Callable
+import time
+from collections.abc import Callable, Iterator
+from contextlib import AbstractContextManager, contextmanager
 from datetime import UTC, datetime
 
 import psycopg
-from flask import Flask
+from flask import Flask, Response, request
 
 from carma.adapters.postgis_delays import PostgisFeedStatusRepository
+from carma.adapters.postgis_positions import PostgisVehiclePositionReader
+from carma.application.ports import VehiclePositionReader
+from carma.application.position_stream import advance_cursor
 from carma.domain.feed_health import FRESHNESS_WINDOW, feed_age_seconds, is_feed_fresh
-from carma.domain.models import FeedStatus
+from carma.domain.models import BoundingBox, FeedStatus, VehiclePosition
 
 FEED_META = {
     "provider": "VBB (Verkehrsverbund Berlin-Brandenburg)",
@@ -17,12 +23,26 @@ FEED_META = {
     "vehicle_positions": "derived",
 }
 
+# All of VBB peaks around ~7k concurrently active trips; the default returns
+# the full fleet, the cap keeps a typo'd limit from asking for millions.
+DEFAULT_POSITIONS_LIMIT = 10_000
+MAX_POSITIONS_LIMIT = 20_000
+
 FeedStatusSource = Callable[[], FeedStatus | None]
+# A context manager per use: the default implementation opens a short-lived
+# database connection scoped to one request (or one SSE client).
+PositionReaderFactory = Callable[[], AbstractContextManager[VehiclePositionReader]]
 
 
-def create_app(feed_status_source: FeedStatusSource | None = None) -> Flask:
+def create_app(
+    feed_status_source: FeedStatusSource | None = None,
+    position_reader_factory: PositionReaderFactory | None = None,
+) -> Flask:
     app = Flask("carma")
     source = feed_status_source if feed_status_source is not None else _feed_status_from_env
+    reader_factory = (
+        position_reader_factory if position_reader_factory is not None else _reader_from_env
+    )
 
     @app.get("/health")
     def health() -> dict[str, object]:
@@ -45,7 +65,122 @@ def create_app(feed_status_source: FeedStatusSource | None = None) -> Flask:
     def meta() -> dict[str, object]:
         return {"feed": FEED_META}
 
+    @app.get("/api/v1/positions")
+    def positions() -> tuple[dict[str, object], int] | dict[str, object]:
+        """Current derived vehicle positions.
+
+        Query parameters:
+        - ``bbox=minLon,minLat,maxLon,maxLat`` — optional spatial filter;
+        - ``limit`` — max rows (default 10000, capped at 20000).
+        """
+        try:
+            bbox = _parse_bbox(request.args.get("bbox"))
+            limit = _parse_limit(request.args.get("limit"))
+        except ValueError as error:
+            return {"error": str(error)}, 400
+        with reader_factory() as reader:
+            rows = reader.positions(bbox, limit)
+        return {
+            "positions": [_position_json(row) for row in rows],
+            "count": len(rows),
+            "limit": limit,
+        }
+
+    @app.get("/api/v1/positions/stream")
+    def positions_stream() -> Response | tuple[dict[str, object], int]:
+        """SSE stream of position deltas.
+
+        Each ``positions`` event carries the rows recomputed since the
+        client's cursor plus the new cursor; the event ``id`` doubles as the
+        cursor so EventSource reconnection (Last-Event-ID) resumes cleanly. A
+        comment line is sent as keep-alive when nothing changed. Position
+        *removals* (ended trips) are not announced — clients refresh via the
+        snapshot endpoint or age vehicles out.
+
+        Concurrency, honestly: each connected client occupies one gunicorn
+        gthread worker thread (and one DB connection) for its whole lifetime.
+        With the compose config (2 workers x 8 threads) that means a handful
+        of concurrent SSE clients alongside normal requests — right for a
+        demo dashboard, not for production fan-out (that would want an async
+        server or a pub/sub edge).
+        """
+        raw_cursor = request.args.get("cursor") or request.headers.get("Last-Event-ID")
+        try:
+            cursor = datetime.fromisoformat(raw_cursor) if raw_cursor else None
+        except ValueError:
+            return {"error": "cursor must be an ISO-8601 timestamp"}, 400
+        poll_seconds = float(os.environ.get("CARMA_SSE_POLL_SECONDS", "3"))
+        return Response(
+            _event_stream(reader_factory, cursor, poll_seconds),
+            mimetype="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
     return app
+
+
+def _event_stream(
+    reader_factory: PositionReaderFactory,
+    cursor: datetime | None,
+    poll_seconds: float,
+) -> Iterator[str]:
+    # The first poll runs before any sleep, so a new client gets the current
+    # state (or an immediate keep-alive) without waiting a full interval.
+    with reader_factory() as reader:
+        while True:
+            rows = reader.positions_since(cursor, MAX_POSITIONS_LIMIT)
+            newest = advance_cursor(cursor, rows)
+            if rows and newest is not None:
+                cursor = newest
+                token = newest.isoformat()
+                payload = json.dumps(
+                    {
+                        "positions": [_position_json(row) for row in rows],
+                        "cursor": token,
+                    }
+                )
+                yield f"id: {token}\nevent: positions\ndata: {payload}\n\n"
+            else:
+                yield ": keep-alive\n\n"
+            time.sleep(poll_seconds)
+
+
+def _position_json(row: VehiclePosition) -> dict[str, object]:
+    return {
+        "trip_id": row.trip_id.value,
+        "route_id": row.route_id,
+        "route_short_name": row.route_short_name,
+        "lat": row.lat,
+        "lon": row.lon,
+        "bearing": row.bearing,
+        "delay_seconds": row.delay_seconds,
+        "computed_at": row.computed_at.isoformat(),
+    }
+
+
+def _parse_bbox(raw: str | None) -> BoundingBox | None:
+    if raw is None or raw == "":
+        return None
+    parts = raw.split(",")
+    if len(parts) != 4:
+        raise ValueError("bbox must be minLon,minLat,maxLon,maxLat")
+    try:
+        min_lon, min_lat, max_lon, max_lat = (float(part) for part in parts)
+    except ValueError:
+        raise ValueError("bbox coordinates must be numbers") from None
+    return BoundingBox(min_lon=min_lon, min_lat=min_lat, max_lon=max_lon, max_lat=max_lat)
+
+
+def _parse_limit(raw: str | None) -> int:
+    if raw is None or raw == "":
+        return DEFAULT_POSITIONS_LIMIT
+    try:
+        limit = int(raw)
+    except ValueError:
+        raise ValueError("limit must be an integer") from None
+    if limit < 1:
+        raise ValueError("limit must be positive")
+    return min(limit, MAX_POSITIONS_LIMIT)
 
 
 def _feed_report(source: FeedStatusSource) -> dict[str, object]:
@@ -75,6 +210,12 @@ def _feed_status_from_env() -> FeedStatus | None:
     # the worst case well under the probe timeout.
     with psycopg.connect(_require_database_url(), connect_timeout=3) as conn:
         return PostgisFeedStatusRepository(conn=conn).latest()
+
+
+@contextmanager
+def _reader_from_env() -> Iterator[VehiclePositionReader]:
+    with psycopg.connect(_require_database_url(), connect_timeout=3) as conn:
+        yield PostgisVehiclePositionReader(conn=conn)
 
 
 def _require_database_url() -> str:

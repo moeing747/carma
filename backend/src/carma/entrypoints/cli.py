@@ -1,5 +1,5 @@
 """Console scripts: carma-migrate, carma-load-gtfs, carma-poll-feed,
-and carma-consume-trip-updates."""
+carma-consume-trip-updates, and carma-project-positions."""
 
 import argparse
 import logging
@@ -7,6 +7,7 @@ import os
 import signal
 import threading
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from types import FrameType
 
@@ -22,8 +23,10 @@ from carma.adapters.kafka import (
 )
 from carma.adapters.migrations import apply_migrations
 from carma.adapters.postgis_delays import PostgisFeedStatusRepository, PostgisTripDelayRepository
+from carma.adapters.postgis_positions import PostgisPositionEngine
+from carma.adapters.postgis_schedule import PostgisTripScheduleRepository
 from carma.application.polling import PollSchedule
-from carma.application.use_cases import ApplyTripDelays, IngestFeedSnapshot
+from carma.application.use_cases import ApplyTripDelays, IngestFeedSnapshot, RecomputePositions
 
 _DEFAULT_FEED_URL = "https://production.gtfsrt.vbb.de/data"
 
@@ -184,3 +187,53 @@ def consume_trip_updates() -> None:
         finally:
             consumer.close()
     _log.info("event=consumer_stopped")
+
+
+def project_positions() -> None:
+    """Recompute derived vehicle positions for all active trips on a loop."""
+    parser = argparse.ArgumentParser(
+        prog="carma-project-positions",
+        description="Derive vehicle positions from schedule + delays every few seconds.",
+    )
+    parser.add_argument(
+        "--once",
+        action="store_true",
+        help="run a single projection tick and exit (non-zero on failure)",
+    )
+    args = parser.parse_args()
+    _configure_logging()
+
+    interval = float(os.environ.get("CARMA_PROJECTION_INTERVAL_SECONDS", "5"))
+    schedule = PollSchedule(interval_seconds=interval)
+    stop = _stop_event_on_signals()
+
+    # autocommit=True: the engine runs each tick in its own transaction.
+    with psycopg.connect(_database_url(), autocommit=True) as conn:
+        recompute = RecomputePositions(
+            schedule=PostgisTripScheduleRepository(conn=conn),
+            engine=PostgisPositionEngine(conn=conn),
+        )
+        _log.info("event=projector_started interval_seconds=%s", interval)
+        failures = 0
+        while not stop.is_set():
+            started = time.monotonic()
+            try:
+                report = recompute.execute(datetime.now(tz=UTC))
+                failures = 0
+                _log.info(
+                    "event=positions_recomputed active=%d written=%d elapsed_ms=%d",
+                    report.active_trips,
+                    report.positions_written,
+                    int((time.monotonic() - started) * 1000),
+                )
+            except Exception:
+                failures += 1
+                _log.exception(
+                    "event=positions_recompute_failed consecutive_failures=%d", failures
+                )
+                if args.once:
+                    raise SystemExit(1) from None
+            if args.once:
+                break
+            stop.wait(schedule.next_delay(time.monotonic() - started, failures))
+    _log.info("event=projector_stopped")

@@ -60,9 +60,13 @@ def load_gtfs_zip(conn: psycopg.Connection[Any], zip_path: Path) -> LoadReport:
         if _member(names, "calendar.txt") is None and _member(names, "calendar_dates.txt") is None:
             raise ValueError("GTFS zip has neither calendar.txt nor calendar_dates.txt")
         with conn.transaction():
+            # shape_stop_fractions and vehicle_positions are projections of
+            # the tables reloaded here; stale entries would mix old geometry
+            # with new IDs, so a reload drops them (the engine rebuilds both).
             conn.execute(
                 "TRUNCATE agencies, routes, trips, stops, stop_times,"
-                " shapes, shape_points, calendar, calendar_dates"
+                " shapes, shape_points, calendar, calendar_dates,"
+                " shape_stop_fractions, vehicle_positions"
             )
             counts = {
                 "agencies": _load_agencies(conn, archive),

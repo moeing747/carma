@@ -1,7 +1,13 @@
+from collections.abc import Collection
 from datetime import UTC, datetime, timedelta
 
-from carma.application.use_cases import ApplyTripDelays, IngestFeedSnapshot
-from carma.domain.models import TripDelay, TripId
+from carma.application.use_cases import (
+    ApplyTripDelays,
+    IngestFeedSnapshot,
+    RecomputePositions,
+    RecomputeReport,
+)
+from carma.domain.models import Coordinate, ScheduledStop, TripDelay, TripId
 
 BASE_TIME = datetime(2026, 7, 16, 12, 0, tzinfo=UTC)
 
@@ -116,3 +122,41 @@ def test_apply_of_empty_batch_touches_nothing() -> None:
 
     assert repository.saved == []
     assert feed_status.snapshots == []
+
+
+class StaticScheduleRepository:
+    def __init__(self, active: frozenset[TripId]) -> None:
+        self.active = active
+        self.asked_at: list[datetime] = []
+
+    def active_trip_ids(self, at: datetime) -> frozenset[TripId]:
+        self.asked_at.append(at)
+        return self.active
+
+    def schedule_for_trip(self, trip_id: TripId) -> tuple[ScheduledStop, ...]:
+        return ()
+
+    def shape_for_trip(self, trip_id: TripId) -> tuple[Coordinate, ...] | None:
+        return None
+
+
+class RecordingEngine:
+    def __init__(self, written: int) -> None:
+        self.written = written
+        self.calls: list[tuple[frozenset[TripId], datetime]] = []
+
+    def recompute(self, trip_ids: Collection[TripId], at: datetime) -> int:
+        self.calls.append((frozenset(trip_ids), at))
+        return self.written
+
+
+def test_recompute_positions_hands_active_trips_to_the_engine() -> None:
+    active = frozenset({TripId("trip-1"), TripId("trip-2")})
+    schedule = StaticScheduleRepository(active)
+    engine = RecordingEngine(written=2)
+
+    report = RecomputePositions(schedule=schedule, engine=engine).execute(BASE_TIME)
+
+    assert schedule.asked_at == [BASE_TIME]
+    assert engine.calls == [(active, BASE_TIME)]
+    assert report == RecomputeReport(active_trips=2, positions_written=2)

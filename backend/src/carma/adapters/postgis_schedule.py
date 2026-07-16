@@ -16,6 +16,15 @@ from carma.domain.service_days import (
 _FALLBACK_TIMEZONE = "Europe/Berlin"
 
 
+def to_feed_local(conn: psycopg.Connection[Any], at: datetime) -> datetime:
+    """Naive feed-local wall time; aware inputs convert via agency timezone."""
+    if at.tzinfo is None:
+        return at
+    row = conn.execute("SELECT agency_timezone FROM agencies LIMIT 1").fetchone()
+    timezone = row[0] if row and row[0] else _FALLBACK_TIMEZONE
+    return at.astimezone(ZoneInfo(timezone)).replace(tzinfo=None)
+
+
 @dataclass(frozen=True, slots=True)
 class PostgisTripScheduleRepository:
     """TripScheduleRepository implementation over the loaded GTFS tables."""
@@ -80,12 +89,7 @@ class PostgisTripScheduleRepository:
         return tuple(Coordinate(lat=lat, lon=lon) for lat, lon in rows)
 
     def _to_feed_local(self, at: datetime) -> datetime:
-        """Naive feed-local wall time; aware inputs convert via agency timezone."""
-        if at.tzinfo is None:
-            return at
-        row = self.conn.execute("SELECT agency_timezone FROM agencies LIMIT 1").fetchone()
-        timezone = row[0] if row and row[0] else _FALLBACK_TIMEZONE
-        return at.astimezone(ZoneInfo(timezone)).replace(tzinfo=None)
+        return to_feed_local(self.conn, at)
 
     def _calendar_periods(self) -> tuple[CalendarPeriod, ...]:
         rows = self.conn.execute(

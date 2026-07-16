@@ -123,6 +123,22 @@ services:
       migrate:
         condition: service_completed_successfully
 
+  # Derives vehicle positions (schedule + delays -> shape projection) on a
+  # ~5s loop into the UNLOGGED vehicle_positions projection table.
+  projector:
+    build:
+      context: ../backend
+    restart: unless-stopped
+    command: ['carma-project-positions']
+    environment:
+      DATABASE_URL: postgres://carma:carma@postgis:5432/carma
+      CARMA_PROJECTION_INTERVAL_SECONDS: ${CARMA_PROJECTION_INTERVAL_SECONDS:-5}
+    depends_on:
+      postgis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
 volumes:
   kafka_data:
   postgis_data:

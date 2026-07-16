@@ -1,8 +1,10 @@
+from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
 from carma.domain.models import (
+    BoundingBox,
     Coordinate,
     FeedStatus,
     ScheduledStop,
@@ -63,8 +65,27 @@ class TripScheduleRepository(Protocol):
         ...
 
 
-class PositionProjector(Protocol):
-    def project(self, delay: TripDelay) -> VehiclePosition | None: ...
+class PositionRecomputeEngine(Protocol):
+    def recompute(self, trip_ids: Collection[TripId], at: datetime) -> int:
+        """Replace the stored positions with ones derived for these trips.
+
+        One set-based pass at the given instant: trips that yield a position
+        are upserted, previously stored trips that no longer do are removed.
+        Returns the number of positions written. Must implement the
+        semantics documented in carma.domain.positioning.
+        """
+        ...
+
+
+class VehiclePositionReader(Protocol):
+    def positions(self, bbox: BoundingBox | None, limit: int) -> tuple[VehiclePosition, ...]:
+        """Current positions, optionally restricted to a bounding box."""
+        ...
+
+    def positions_since(self, cursor: datetime | None, limit: int) -> tuple[VehiclePosition, ...]:
+        """Positions computed strictly after ``cursor`` (all when None),
+        ordered by computed_at so callers can advance a delta cursor."""
+        ...
 
 
 @dataclass(frozen=True, slots=True)

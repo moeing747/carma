@@ -53,10 +53,27 @@ class ScheduledStop:
 @dataclass(frozen=True, slots=True)
 class VehiclePosition:
     # The VBB feed carries no GPS: positions are always computed by projecting
-    # schedule progress plus live delay onto the trip's shape geometry.
+    # schedule progress plus live delay onto the trip's shape geometry
+    # (carma.domain.positioning documents the semantics).
     trip_id: TripId
     route_id: str
+    route_short_name: str
     lat: float
     lon: float
     bearing: float | None
+    delay_seconds: int
     computed_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class BoundingBox:
+    min_lon: float
+    min_lat: float
+    max_lon: float
+    max_lat: float
+
+    def __post_init__(self) -> None:
+        if not (-180.0 <= self.min_lon <= self.max_lon <= 180.0):
+            raise ValueError("longitudes must satisfy -180 <= min <= max <= 180")
+        if not (-90.0 <= self.min_lat <= self.max_lat <= 90.0):
+            raise ValueError("latitudes must satisfy -90 <= min <= max <= 90")
