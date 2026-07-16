@@ -5,7 +5,14 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from flask import Flask
 
-from carma.domain.models import BoundingBox, FeedStatus, TripId, VehiclePosition
+from carma.domain.models import (
+    BoundingBox,
+    Coordinate,
+    FeedStatus,
+    ScheduledStop,
+    TripId,
+    VehiclePosition,
+)
 from carma.entrypoints.api import create_app
 
 
@@ -98,6 +105,7 @@ def _position(trip_id: str = "T1") -> VehiclePosition:
         bearing=90.0,
         delay_seconds=120,
         computed_at=COMPUTED_AT,
+        headsign="Hauptbahnhof",
     )
 
 
@@ -121,6 +129,12 @@ class StubPositionReader:
             return ()
         return self.rows[:limit]
 
+    def position_for_trip(self, trip_id: TripId) -> VehiclePosition | None:
+        for row in self.rows:
+            if row.trip_id == trip_id:
+                return row
+        return None
+
 
 def _positions_app(reader: StubPositionReader) -> Flask:
     return create_app(
@@ -141,6 +155,7 @@ def test_positions_returns_rows_with_route_names() -> None:
     row = body["positions"][0]
     assert row["trip_id"] == "T1"
     assert row["route_short_name"] == "M1"
+    assert row["headsign"] == "Hauptbahnhof"
     assert row["delay_seconds"] == 120
     assert row["computed_at"] == COMPUTED_AT.isoformat()
     assert reader.calls == [(None, 10_000)]
@@ -221,3 +236,84 @@ def test_positions_stream_rejects_malformed_cursor() -> None:
     response = client.get("/api/v1/positions/stream?cursor=not-a-time")
 
     assert response.status_code == 400
+
+
+def _stop(
+    sequence: int, name: str, arrival: int | None, departure: int | None
+) -> ScheduledStop:
+    return ScheduledStop(
+        stop_id=f"S{sequence}",
+        stop_name=name,
+        stop_sequence=sequence,
+        arrival_seconds=arrival,
+        departure_seconds=departure,
+        coordinate=Coordinate(lat=52.5, lon=13.4),
+    )
+
+
+T1_SCHEDULE = (
+    _stop(1, "Alpha", None, 8 * 3600),
+    _stop(2, "Beta", 8 * 3600 + 600, 8 * 3600 + 660),
+    # A past-midnight time: 25:10 must render as wall-clock 01:10.
+    _stop(3, "Gamma", 25 * 3600 + 600, None),
+)
+
+
+class StubScheduleRepository:
+    def __init__(self, schedules: dict[str, tuple[ScheduledStop, ...]]) -> None:
+        self.schedules = schedules
+
+    def active_trip_ids(self, at: datetime) -> frozenset[TripId]:
+        return frozenset(TripId(trip_id) for trip_id in self.schedules)
+
+    def schedule_for_trip(self, trip_id: TripId) -> tuple[ScheduledStop, ...]:
+        return self.schedules.get(trip_id.value, ())
+
+    def shape_for_trip(self, trip_id: TripId) -> tuple[Coordinate, ...] | None:
+        return None
+
+
+def _schedule_app(reader: StubPositionReader) -> Flask:
+    return create_app(
+        feed_status_source=lambda: None,
+        position_reader_factory=lambda: nullcontext(reader),
+        schedule_repository_factory=lambda: nullcontext(
+            StubScheduleRepository({"T1": T1_SCHEDULE})
+        ),
+    )
+
+
+def test_trip_schedule_returns_ordered_stops_with_delay() -> None:
+    client = _schedule_app(StubPositionReader((_position("T1"),))).test_client()
+
+    response = client.get("/api/v1/trips/T1/schedule")
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["trip_id"] == "T1"
+    assert body["delay_seconds"] == 120
+    assert [stop["name"] for stop in body["stops"]] == ["Alpha", "Beta", "Gamma"]
+    first, second, third = body["stops"]
+    assert first["arrival"] is None and first["departure"] == "08:00"
+    assert first["departure_seconds"] == 8 * 3600
+    assert second["arrival"] == "08:10" and second["departure"] == "08:11"
+    assert third["arrival"] == "01:10"  # 25:10 GTFS time, wall clock
+    assert third["arrival_seconds"] == 25 * 3600 + 600
+
+
+def test_trip_schedule_without_position_has_null_delay() -> None:
+    client = _schedule_app(StubPositionReader(())).test_client()
+
+    response = client.get("/api/v1/trips/T1/schedule")
+
+    assert response.status_code == 200
+    assert response.get_json()["delay_seconds"] is None
+
+
+def test_trip_schedule_unknown_trip_is_404() -> None:
+    client = _schedule_app(StubPositionReader(())).test_client()
+
+    response = client.get("/api/v1/trips/NOPE/schedule")
+
+    assert response.status_code == 404
+    assert "error" in response.get_json()

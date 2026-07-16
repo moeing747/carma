@@ -10,10 +10,17 @@ from flask import Flask, Response, request
 
 from carma.adapters.postgis_delays import PostgisFeedStatusRepository
 from carma.adapters.postgis_positions import PostgisVehiclePositionReader
-from carma.application.ports import VehiclePositionReader
+from carma.adapters.postgis_schedule import PostgisTripScheduleRepository
+from carma.application.ports import TripScheduleRepository, VehiclePositionReader
 from carma.application.position_stream import advance_cursor
 from carma.domain.feed_health import FRESHNESS_WINDOW, feed_age_seconds, is_feed_fresh
-from carma.domain.models import BoundingBox, FeedStatus, VehiclePosition
+from carma.domain.models import (
+    BoundingBox,
+    FeedStatus,
+    ScheduledStop,
+    TripId,
+    VehiclePosition,
+)
 
 FEED_META = {
     "provider": "VBB (Verkehrsverbund Berlin-Brandenburg)",
@@ -32,16 +39,23 @@ FeedStatusSource = Callable[[], FeedStatus | None]
 # A context manager per use: the default implementation opens a short-lived
 # database connection scoped to one request (or one SSE client).
 PositionReaderFactory = Callable[[], AbstractContextManager[VehiclePositionReader]]
+ScheduleRepositoryFactory = Callable[[], AbstractContextManager[TripScheduleRepository]]
 
 
 def create_app(
     feed_status_source: FeedStatusSource | None = None,
     position_reader_factory: PositionReaderFactory | None = None,
+    schedule_repository_factory: ScheduleRepositoryFactory | None = None,
 ) -> Flask:
     app = Flask("carma")
     source = feed_status_source if feed_status_source is not None else _feed_status_from_env
     reader_factory = (
         position_reader_factory if position_reader_factory is not None else _reader_from_env
+    )
+    schedule_factory = (
+        schedule_repository_factory
+        if schedule_repository_factory is not None
+        else _schedule_repository_from_env
     )
 
     @app.get("/health")
@@ -84,6 +98,26 @@ def create_app(
             "positions": [_position_json(row) for row in rows],
             "count": len(rows),
             "limit": limit,
+        }
+
+    @app.get("/api/v1/trips/<trip_id>/schedule")
+    def trip_schedule(trip_id: str) -> tuple[dict[str, object], int] | dict[str, object]:
+        """The trip's ordered stops plus its current delay, if one is known.
+
+        Scheduled times come back both as raw GTFS seconds (may exceed 86400
+        past midnight — the value clients should compare against) and as a
+        wall-clock ``HH:MM`` display string.
+        """
+        with schedule_factory() as schedule:
+            stops = schedule.schedule_for_trip(TripId(trip_id))
+        if not stops:
+            return {"error": f"unknown trip {trip_id!r}"}, 404
+        with reader_factory() as reader:
+            position = reader.position_for_trip(TripId(trip_id))
+        return {
+            "trip_id": trip_id,
+            "delay_seconds": None if position is None else position.delay_seconds,
+            "stops": [_stop_json(stop) for stop in stops],
         }
 
     @app.get("/api/v1/positions/stream")
@@ -150,12 +184,32 @@ def _position_json(row: VehiclePosition) -> dict[str, object]:
         "trip_id": row.trip_id.value,
         "route_id": row.route_id,
         "route_short_name": row.route_short_name,
+        "headsign": row.headsign,
         "lat": row.lat,
         "lon": row.lon,
         "bearing": row.bearing,
         "delay_seconds": row.delay_seconds,
         "computed_at": row.computed_at.isoformat(),
     }
+
+
+def _stop_json(stop: ScheduledStop) -> dict[str, object]:
+    return {
+        "stop_id": stop.stop_id,
+        "name": stop.stop_name,
+        "stop_sequence": stop.stop_sequence,
+        "arrival_seconds": stop.arrival_seconds,
+        "departure_seconds": stop.departure_seconds,
+        "arrival": _hh_mm(stop.arrival_seconds),
+        "departure": _hh_mm(stop.departure_seconds),
+    }
+
+
+def _hh_mm(seconds: int | None) -> str | None:
+    """Service-day seconds -> wall-clock ``HH:MM`` (25:10:00 shows as 01:10)."""
+    if seconds is None:
+        return None
+    return f"{seconds // 3600 % 24:02d}:{seconds // 60 % 60:02d}"
 
 
 def _parse_bbox(raw: str | None) -> BoundingBox | None:
@@ -216,6 +270,12 @@ def _feed_status_from_env() -> FeedStatus | None:
 def _reader_from_env() -> Iterator[VehiclePositionReader]:
     with psycopg.connect(_require_database_url(), connect_timeout=3) as conn:
         yield PostgisVehiclePositionReader(conn=conn)
+
+
+@contextmanager
+def _schedule_repository_from_env() -> Iterator[TripScheduleRepository]:
+    with psycopg.connect(_require_database_url(), connect_timeout=3) as conn:
+        yield PostgisTripScheduleRepository(conn=conn)
 
 
 def _require_database_url() -> str:

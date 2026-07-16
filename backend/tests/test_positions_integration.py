@@ -346,14 +346,17 @@ def test_recompute_tick_stays_within_budget(
 
 
 def test_positions_endpoint_filters_by_bbox(
-    conn: psycopg.Connection[Any], engine: PostgisPositionEngine
+    conn: psycopg.Connection[Any],
+    engine: PostgisPositionEngine,
+    repo: PostgisTripScheduleRepository,
 ) -> None:
-    _clear_delays(conn)
-    engine.recompute({TripId("T1")}, _at(8, 15))
+    _set_delays(conn, "T1", T1_DELAY_EVENTS)
+    engine.recompute({TripId("T1")}, _at(8, 12))
     reader = PostgisVehiclePositionReader(conn=conn)
     app = create_app(
         feed_status_source=lambda: None,
         position_reader_factory=lambda: nullcontext(reader),
+        schedule_repository_factory=lambda: nullcontext(repo),
     )
     client = app.test_client()
 
@@ -362,9 +365,28 @@ def test_positions_endpoint_filters_by_bbox(
     row = berlin["positions"][0]
     assert row["trip_id"] == "T1"
     assert row["route_short_name"] == "M1"
+    assert row["headsign"] == "Hauptbahnhof"
 
     elsewhere = client.get("/api/v1/positions?bbox=13.6,52.4,13.8,52.6").get_json()
     assert elsewhere["count"] == 0
+
+    # The schedule route over the same fixture data: ordered stops with
+    # display times, plus the live delay the recompute just stored.
+    schedule = client.get("/api/v1/trips/T1/schedule")
+    assert schedule.status_code == 200
+    body = schedule.get_json()
+    assert body["delay_seconds"] == 240
+    assert [stop["name"] for stop in body["stops"]] == [
+        "Alexanderplatz",
+        "Hackescher Markt",
+        "Friedrichstr.",
+        "Hauptbahnhof",
+    ]
+    assert body["stops"][0]["departure"] == "08:00"
+    assert body["stops"][1]["arrival_seconds"] == 8 * 3600 + 600
+
+    assert client.get("/api/v1/trips/NOPE/schedule").status_code == 404
+    _clear_delays(conn)
 
 
 def test_sse_stream_delivers_a_delta_after_a_recompute(

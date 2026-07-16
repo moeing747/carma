@@ -87,6 +87,10 @@ class VehiclePositionReader(Protocol):
         ordered by computed_at so callers can advance a delta cursor."""
         ...
 
+    def position_for_trip(self, trip_id: TripId) -> VehiclePosition | None:
+        """The current position for one trip, or None when it has none."""
+        ...
+
 
 @dataclass(frozen=True, slots=True)
 class OptimizationRequest:

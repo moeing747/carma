@@ -230,12 +230,17 @@ SELECT (SELECT count(*) FROM upserted) AS written,
        (SELECT count(*) FROM removed) AS removed
 """
 
+# route_short_name and headsign are joined from the static tables at read
+# time rather than denormalized into vehicle_positions: the projection stays
+# minimal/rebuildable, and both joins are primary-key lookups.
 _POSITION_COLUMNS = """
 SELECT vp.trip_id, vp.route_id, COALESCE(r.route_short_name, '') AS route_short_name,
        ST_Y(vp.geom) AS lat, ST_X(vp.geom) AS lon,
-       vp.bearing, vp.delay_seconds, vp.computed_at
+       vp.bearing, vp.delay_seconds, vp.computed_at,
+       COALESCE(t.trip_headsign, '') AS headsign
 FROM vehicle_positions vp
 LEFT JOIN routes r ON r.route_id = vp.route_id
+LEFT JOIN trips t ON t.trip_id = vp.trip_id
 """
 
 
@@ -310,9 +315,26 @@ class PostgisVehiclePositionReader:
             ).fetchall()
         return tuple(_position_from_row(row) for row in rows)
 
+    def position_for_trip(self, trip_id: TripId) -> VehiclePosition | None:
+        row = self.conn.execute(
+            _POSITION_COLUMNS + " WHERE vp.trip_id = %(trip_id)s",
+            {"trip_id": trip_id.value},
+        ).fetchone()
+        return None if row is None else _position_from_row(row)
+
 
 def _position_from_row(row: tuple[Any, ...]) -> VehiclePosition:
-    trip_id, route_id, route_short_name, lat, lon, bearing, delay_seconds, computed_at = row
+    (
+        trip_id,
+        route_id,
+        route_short_name,
+        lat,
+        lon,
+        bearing,
+        delay_seconds,
+        computed_at,
+        headsign,
+    ) = row
     return VehiclePosition(
         trip_id=TripId(trip_id),
         route_id=route_id,
@@ -322,4 +344,5 @@ def _position_from_row(row: tuple[Any, ...]) -> VehiclePosition:
         bearing=bearing,
         delay_seconds=delay_seconds,
         computed_at=computed_at,
+        headsign=headsign,
     )

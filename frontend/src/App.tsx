@@ -1,58 +1,159 @@
-import type { MapViewState } from '@deck.gl/core'
-import { ScatterplotLayer } from '@deck.gl/layers'
-import DeckGL from '@deck.gl/react'
-import { Map } from 'react-map-gl/maplibre'
-import 'maplibre-gl/dist/maplibre-gl.css'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 
-const INITIAL_VIEW_STATE: MapViewState = {
-  longitude: 13.405,
-  latitude: 52.52,
-  zoom: 11,
+import { Banner } from './components/Banner'
+import { EmptyState } from './components/EmptyState'
+import { Header } from './components/Header'
+import { LegendStats } from './components/LegendStats'
+import { LineFilter, type LineStat } from './components/LineFilter'
+import { MapCanvas, type Bounds } from './components/MapCanvas'
+import { SelectedPanel } from './components/SelectedPanel'
+import { isOnTime, kindOf, type LineKind } from './lib/helpers'
+import { PositionStream } from './lib/stream'
+import { VehicleStore } from './lib/store'
+import { useFeedStatus } from './lib/useFeedStatus'
+
+const KIND_ORDER: Record<LineKind, number> = {
+  'u-bahn': 0,
+  's-bahn': 1,
+  tram: 2,
+  bus: 3,
+  other: 4,
 }
-
-const BASEMAP_STYLE = 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json'
-
-const FLIX_GREEN: [number, number, number] = [115, 215, 0]
-
-interface Vehicle {
-  id: string
-  routeId: string
-  position: [longitude: number, latitude: number]
-}
-
-// Placeholder until positions are derived from the VBB TripUpdate feed.
-const PLACEHOLDER_VEHICLES: Vehicle[] = [
-  { id: 'v-001', routeId: 'M10', position: [13.4132, 52.5219] },
-  { id: 'v-002', routeId: 'X9', position: [13.3327, 52.5072] },
-  { id: 'v-003', routeId: 'S41', position: [13.4019, 52.4731] },
-]
 
 export default function App() {
-  const vehicleLayer = new ScatterplotLayer<Vehicle>({
-    id: 'vehicles',
-    data: PLACEHOLDER_VEHICLES,
-    getPosition: (vehicle) => vehicle.position,
-    getFillColor: FLIX_GREEN,
-    radiusMinPixels: 6,
-    radiusMaxPixels: 14,
-    stroked: true,
-    getLineColor: [10, 12, 14],
-    lineWidthMinPixels: 2,
-    pickable: true,
-  })
+  const [store] = useState(() => new VehicleStore())
+  // Bumped on every SSE batch (~3s); panel derivations key off it. The 60fps
+  // motion lives inside MapCanvas and never re-renders the panels.
+  const [dataTick, setDataTick] = useState(0)
+  const [bounds, setBounds] = useState<Bounds | null>(null)
+  const [activeLines, setActiveLines] = useState<ReadonlySet<string>>(new Set())
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const feed = useFeedStatus()
+
+  useEffect(() => {
+    const stream = new PositionStream('/api/v1/positions/stream', {
+      onPositions: (rows, receivedAtMs) => {
+        store.update(rows, receivedAtMs)
+        setDataTick((tick) => tick + 1)
+      },
+    })
+    stream.start()
+    return () => stream.stop()
+  }, [store])
+
+  // Deselect once the selected vehicle ages out of the store.
+  useEffect(() => {
+    if (selectedId !== null && !store.vehicles.has(selectedId)) setSelectedId(null)
+  }, [store, dataTick, selectedId])
+
+  const lines = useMemo<LineStat[]>(() => {
+    void dataTick // recompute key: the store mutates in place per SSE batch
+    const groups = new Map<string, { count: number; delaySum: number }>()
+    for (const vehicle of store.vehicles.values()) {
+      const group = groups.get(vehicle.line)
+      if (group === undefined) {
+        groups.set(vehicle.line, { count: 1, delaySum: vehicle.delaySeconds })
+      } else {
+        group.count += 1
+        group.delaySum += vehicle.delaySeconds
+      }
+    }
+    return Array.from(groups, ([name, group]) => ({
+      name,
+      count: group.count,
+      avgDelaySeconds: group.delaySum / group.count,
+    })).sort((a, b) => {
+      const kindDelta = KIND_ORDER[kindOf(a.name)] - KIND_ORDER[kindOf(b.name)]
+      if (kindDelta !== 0) return kindDelta
+      return a.name.localeCompare(b.name, undefined, { numeric: true })
+    })
+  }, [store, dataTick])
+
+  const stats = useMemo(() => {
+    void dataTick // recompute key: the store mutates in place per SSE batch
+    let inView = 0
+    let onTime = 0
+    const lineDelays = new Map<string, { count: number; delaySum: number }>()
+    for (const vehicle of store.vehicles.values()) {
+      if (activeLines.size > 0 && !activeLines.has(vehicle.line)) continue
+      if (bounds !== null) {
+        const [minLon, minLat, maxLon, maxLat] = bounds
+        if (
+          vehicle.toLon < minLon ||
+          vehicle.toLon > maxLon ||
+          vehicle.toLat < minLat ||
+          vehicle.toLat > maxLat
+        ) {
+          continue
+        }
+      }
+      inView += 1
+      if (isOnTime(vehicle.delaySeconds)) onTime += 1
+      const group = lineDelays.get(vehicle.line)
+      if (group === undefined) {
+        lineDelays.set(vehicle.line, { count: 1, delaySum: vehicle.delaySeconds })
+      } else {
+        group.count += 1
+        group.delaySum += vehicle.delaySeconds
+      }
+    }
+    let worstLine: { name: string; avgDelaySeconds: number } | null = null
+    for (const [name, group] of lineDelays) {
+      const avg = group.delaySum / group.count
+      if (worstLine === null || avg > worstLine.avgDelaySeconds) {
+        worstLine = { name, avgDelaySeconds: avg }
+      }
+    }
+    return {
+      inView,
+      onTimePct: inView === 0 ? null : (100 * onTime) / inView,
+      worstLine,
+    }
+  }, [store, dataTick, bounds, activeLines])
+
+  const toggleLine = useCallback((line: string) => {
+    setActiveLines((current) => {
+      const next = new Set(current)
+      if (next.has(line)) {
+        next.delete(line)
+      } else {
+        next.add(line)
+      }
+      return next
+    })
+  }, [])
+
+  const handleBounds = useCallback((next: Bounds) => setBounds(next), [])
+
+  const loaded = dataTick > 0
+  const total = store.vehicles.size
+  const showEmpty = loaded && feed.state === 'fresh' && stats.inView === 0
 
   return (
     <div className="app">
-      <header className="app-header">
-        <span className="wordmark">Carma</span>
-        <span className="tagline">Berlin transit, live</span>
-        <span className="status-pill">feed: awaiting ingest</span>
-      </header>
-      <main className="map-shell">
-        <DeckGL initialViewState={INITIAL_VIEW_STATE} controller layers={[vehicleLayer]}>
-          <Map mapStyle={BASEMAP_STYLE} />
-        </DeckGL>
-      </main>
+      <MapCanvas
+        store={store}
+        activeLines={activeLines}
+        selectedId={selectedId}
+        onSelect={setSelectedId}
+        onBoundsChange={handleBounds}
+      />
+      <Header feedState={feed.state} feedAgeSeconds={feed.ageSeconds} vehicleCount={total} />
+      {feed.state === 'stale' && <Banner state="stale" subSeconds={feed.ageSeconds} />}
+      {feed.state === 'unavailable' && (
+        <Banner state="unavailable" subSeconds={feed.unavailableForSeconds} />
+      )}
+      <LineFilter lines={lines} activeLines={activeLines} onToggle={toggleLine} />
+      <LegendStats
+        onTimePct={stats.onTimePct}
+        inView={stats.inView}
+        total={total}
+        worstLine={stats.worstLine}
+      />
+      {selectedId !== null && (
+        <SelectedPanel tripId={selectedId} store={store} onClose={() => setSelectedId(null)} />
+      )}
+      {showEmpty && <EmptyState />}
     </div>
   )
 }

@@ -63,6 +63,9 @@ class VehiclePosition:
     bearing: float | None
     delay_seconds: int
     computed_at: datetime
+    # Presentation metadata joined from the static schedule at read time;
+    # defaulted so the projection engine never has to know about it.
+    headsign: str = ""
 
 
 @dataclass(frozen=True, slots=True)

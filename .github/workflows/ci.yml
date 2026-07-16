@@ -44,7 +44,7 @@ jobs:
       - run: pytest -m integration
 
   frontend:
-    name: Frontend (build)
+    name: Frontend (lint, vitest, build)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -60,6 +60,8 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
 
       - run: npm ci
+      - run: npm run lint
+      - run: npm run test
       - run: npm run build
 
   commitlint:
