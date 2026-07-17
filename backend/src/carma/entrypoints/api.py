@@ -58,6 +58,7 @@ def create_app(
     schedule_repository_factory: ScheduleRepositoryFactory | None = None,
     optimization_engine: OptimizationEngine | None = None,
     now_source: Callable[[], datetime] | None = None,
+    utc_now_source: Callable[[], datetime] | None = None,
 ) -> Flask:
     app = Flask("carma")
     source = feed_status_source if feed_status_source is not None else _feed_status_from_env
@@ -71,6 +72,10 @@ def create_app(
     )
     engine = optimization_engine if optimization_engine is not None else _engine_from_env()
     now = now_source if now_source is not None else _feed_local_now
+    # Feed freshness is judged against this tz-aware UTC clock (distinct from
+    # now_source, which is naive feed-local time for schedule queries);
+    # injectable so tests can move past the freshness window without waiting.
+    utc_now = utc_now_source if utc_now_source is not None else _utc_now
 
     @app.get("/health")
     def health() -> dict[str, object]:
@@ -82,12 +87,12 @@ def create_app(
         non-200 for it would flap the healthcheck and restart a perfectly
         healthy API. Freshness details live in the body and on /api/v1/feed.
         """
-        return {"status": "ok", "feed": _feed_report(source)}
+        return {"status": "ok", "feed": _feed_report(source, utc_now)}
 
     @app.get("/api/v1/feed")
     def feed() -> dict[str, object]:
         """Feed ingestion status; 200 even when stale (see /health rationale)."""
-        return _feed_report(source)
+        return _feed_report(source, utc_now)
 
     @app.get("/api/v1/meta")
     def meta() -> dict[str, object]:
@@ -311,7 +316,9 @@ def _parse_limit(raw: str | None) -> int:
     return min(limit, MAX_POSITIONS_LIMIT)
 
 
-def _feed_report(source: FeedStatusSource) -> dict[str, object]:
+def _feed_report(
+    source: FeedStatusSource, utc_now: Callable[[], datetime]
+) -> dict[str, object]:
     try:
         status = source()
     except Exception:
@@ -320,7 +327,7 @@ def _feed_report(source: FeedStatusSource) -> dict[str, object]:
         return {"state": "unavailable", "fresh": False}
     if status is None:
         return {"state": "no_data", "fresh": False}
-    now = datetime.now(tz=UTC)
+    now = utc_now()
     fresh = is_feed_fresh(status.last_snapshot_at, now)
     return {
         "state": "fresh" if fresh else "stale",
@@ -361,6 +368,10 @@ def _engine_from_env() -> OptimizationEngine:
     if choice == "heuristic":
         return HeuristicOptimizationEngine()
     raise ValueError(f"CARMA_OPTIMIZER must be 'cpsat' or 'heuristic', got {choice!r}")
+
+
+def _utc_now() -> datetime:
+    return datetime.now(tz=UTC)
 
 
 def _feed_local_now() -> datetime:
