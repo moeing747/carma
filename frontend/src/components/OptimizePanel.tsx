@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-import { badgeColorsFor, delayColor, delayLabel } from '../lib/helpers'
+import { abbreviateStopName, badgeColorsFor, delayColor, delayLabel } from '../lib/helpers'
 import {
   formatHold,
   formatSpread,
@@ -141,9 +141,9 @@ function PlanResult({ plan }: { plan: OptimizePlan }) {
               {delayLabel(vehicle.delay_seconds)}
             </span>
             {vehicle.hold_seconds > 0 ? (
-              <span className="hold">
+              <span className="hold" title={`HOLD ${formatHold(vehicle.hold_seconds)} at ${vehicle.next_stop_name}`}>
                 HOLD <b>{formatHold(vehicle.hold_seconds)}</b>
-                <span className="at"> at {vehicle.next_stop_name}</span>
+                <span className="at"> at {abbreviateStopName(vehicle.next_stop_name)}</span>
               </span>
             ) : (
               <span className="hold none">no hold</span>

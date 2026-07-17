@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  abbreviateStopName,
   RAMP,
   badgeColorsFor,
   berlinSecondsOfDay,
@@ -139,5 +140,15 @@ describe('serviceNowSeconds', () => {
   })
   it('prefers the candidate nearest the span when outside it', () => {
     expect(serviceNowSeconds(2 * 3600, 8 * 3600, 9 * 3600)).toBe(2 * 3600)
+  })
+})
+
+describe('abbreviateStopName', () => {
+  it('shortens standard German transit terms departure-board style', () => {
+    expect(abbreviateStopName('Neustrelitz, Hauptbahnhof')).toBe('Neustrelitz, Hbf')
+    expect(abbreviateStopName('U Osloer Straße')).toBe('U Osloer Str.')
+    expect(abbreviateStopName('Bahnhofstraße')).toBe('Bahnhofstr.')
+    expect(abbreviateStopName('S Ostbahnhof')).toBe('S Ostbahnhof')
+    expect(abbreviateStopName('Schloßplatz Köpenick (Berlin)')).toBe('Schloßpl. Köpenick (Berlin)')
   })
 })

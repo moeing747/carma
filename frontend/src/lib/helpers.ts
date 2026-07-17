@@ -102,6 +102,26 @@ export function feedAgeLabel(ageSeconds: number): string {
   return `${ageSeconds.toFixed(1)}s`
 }
 
+/** Standard German transit display abbreviations (departure-board style),
+ * so long GTFS stop names fit compact rows the way BVG/VBB render them. */
+const STOP_ABBREVIATIONS: ReadonlyArray<readonly [RegExp, string]> = [
+  [/\bHauptbahnhof\b/g, 'Hbf'],
+  [/\bBahnhof\b/g, 'Bf'],
+  [/\bstraße\b/g, 'str.'],
+  [/\bStraße\b/g, 'Str.'],
+  [/straße\b/g, 'str.'],
+  [/\bPlatz\b/g, 'Pl.'],
+  [/platz\b/g, 'pl.'],
+]
+
+export function abbreviateStopName(name: string): string {
+  let out = name
+  for (const [pattern, replacement] of STOP_ABBREVIATIONS) {
+    out = out.replace(pattern, replacement)
+  }
+  return out
+}
+
 /** Shortest-arc interpolation between two bearings, in degrees. */
 export function lerpBearing(from: number, to: number, f: number): number {
   const delta = ((to - from + 540) % 360) - 180

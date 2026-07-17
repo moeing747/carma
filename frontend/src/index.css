@@ -175,16 +175,15 @@ a:hover{color:#8ef000;}
 .optimize-spread .after{font-weight:600;}
 .optimize-spread .gain{font-size:var(--t-11);color:var(--accent);}
 .optimize-rows{padding:var(--s-2) var(--s-3);display:flex;flex-direction:column;gap:2px;}
-.optimize-row{display:flex;flex-wrap:wrap;align-items:center;gap:var(--s-2);padding:5px 6px;border-radius:var(--r-1);}
+.optimize-row{display:flex;align-items:center;gap:var(--s-2);padding:5px 6px;border-radius:var(--r-1);}
 .optimize-row:hover{background:rgba(255,255,255,0.04);}
-.optimize-row .trip{font-family:var(--f-mono);font-size:var(--t-11);color:var(--text-mono);white-space:nowrap;}
-.optimize-row .row-delay{flex:1;font-family:var(--f-mono);font-size:var(--t-11);font-variant-numeric:tabular-nums;min-width:44px;text-align:right;}
-/* A hold instruction is the row's payload: full width on its own line,
-   never truncated (stop names like "Neustrelitz, Hauptbahnhof" must read). */
-.optimize-row .hold{flex-basis:100%;padding-left:38px;text-align:left;font-family:var(--f-mono);font-size:var(--t-11);color:var(--text-2);white-space:normal;}
+/* The trip id is the least informative cell: it yields width first. */
+.optimize-row .trip{font-family:var(--f-mono);font-size:var(--t-11);color:var(--text-mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:32px;flex-shrink:1;}
+.optimize-row .row-delay{font-family:var(--f-mono);font-size:var(--t-11);font-variant-numeric:tabular-nums;min-width:44px;text-align:right;}
+.optimize-row .hold{flex:1;text-align:right;font-family:var(--f-mono);font-size:var(--t-11);color:var(--text-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .optimize-row .hold b{color:var(--accent);font-weight:600;}
 .optimize-row .hold .at{color:var(--text-3);}
-.optimize-row .hold.none{flex-basis:auto;flex:0 0 auto;padding-left:0;color:var(--text-3);white-space:nowrap;}
+.optimize-row .hold.none{color:var(--text-3);}
 .optimize-foot{padding:var(--s-2) var(--s-4) var(--s-3);border-top:1px solid var(--hairline);font-family:var(--f-mono);font-size:10px;color:var(--text-3);letter-spacing:0.04em;}
 
 /* ---- tooltip ---- */
