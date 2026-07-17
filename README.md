@@ -8,11 +8,18 @@ Real-time Berlin transit monitoring and network-planning demo. Carma ingests the
 
 ## Quickstart
 
-```sh
-# full stack: Kafka + PostGIS + API + realtime ingest (poller & consumer)
-# + position projector; schema migrations run automatically as a one-shot job
-docker compose -f infra/docker-compose.yml up -d
+One command brings up everything — Kafka, PostGIS, migrations, the realtime
+pipeline, and the dashboard; the first boot also downloads and loads the VBB
+static GTFS (~73 MB):
 
+```sh
+scripts/up.sh                  # full demo → http://localhost:5173
+scripts/up.sh --backend-only   # compose stack only (API on :8000)
+scripts/down.sh                # stop everything (data volumes kept)
+scripts/down.sh -v             # full reset (wipes Kafka/PostGIS volumes)
+```
+
+```sh
 # live delays start landing within a poll cycle (~30s):
 curl localhost:8000/api/v1/feed   # freshness + last snapshot
 curl localhost:8000/health        # liveness, always 200; feed state in body
@@ -22,16 +29,13 @@ cd backend
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 .venv/bin/pytest
 
-# static GTFS: migrate (no-op after compose up) and load a feed zip
-# VBB's feed: https://www.vbb.de/vbb-services/api-open-data/datensaetze/ (GTFS static)
+# manual GTFS load (up.sh does this automatically on first boot)
 export DATABASE_URL=postgres://carma:carma@localhost:5432/carma
 .venv/bin/carma-migrate
 .venv/bin/carma-load-gtfs path/to/gtfs.zip
 
-# dashboard (dev server proxies /api to the compose API on localhost:8000)
-cd frontend
-npm install
-npm run dev     # open http://localhost:5173
+# dashboard by hand (dev server proxies /api to the compose API on :8000)
+cd frontend && npm install && npm run dev
 ```
 
 ## Architecture

@@ -25,3 +25,7 @@ dist/
 # Feed snapshots are large; only the trimmed test fixture is tracked.
 *.pb
 !backend/tests/fixtures/*.pb
+
+# up.sh web dev server bookkeeping
+.web.pid
+.web.log
