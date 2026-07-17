@@ -5,9 +5,16 @@ interface LegendStatsProps {
   inView: number
   total: number
   worstLine: { name: string; avgDelaySeconds: number } | null
+  streamConnected: boolean
 }
 
-export function LegendStats({ onTimePct, inView, total, worstLine }: LegendStatsProps) {
+export function LegendStats({
+  onTimePct,
+  inView,
+  total,
+  worstLine,
+  streamConnected,
+}: LegendStatsProps) {
   return (
     <div className="legend glass">
       <div className="legend-ramp-block">
@@ -28,6 +35,12 @@ export function LegendStats({ onTimePct, inView, total, worstLine }: LegendStats
         </div>
       </div>
       <div className="legend-stats">
+        {!streamConnected && (
+          <div className="legend-note">
+            <span className="dot" />
+            stream reconnecting — stats frozen
+          </div>
+        )}
         <div className="stat-row">
           <span className="name">On time</span>
           <span className="ontime">{onTimePct === null ? '—' : `${Math.round(onTimePct)}%`}</span>

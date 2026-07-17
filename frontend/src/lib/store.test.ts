@@ -78,4 +78,37 @@ describe('VehicleStore interpolation', () => {
     expect(store.vehicles.has('T1')).toBe(false)
     expect(store.membershipVersion).toBeGreaterThan(versionBefore)
   })
+
+  it('notifies membership listeners on add and age-out removal', () => {
+    const store = new VehicleStore()
+    let notified = 0
+    const unsubscribe = store.onMembershipChange(() => {
+      notified += 1
+    })
+    store.update([row()], 0)
+    expect(notified).toBe(1)
+    store.tick(46_000) // age-out removal happens inside the rAF tick
+    expect(notified).toBe(2)
+    unsubscribe()
+    store.update([row()], 47_000)
+    expect(notified).toBe(2)
+  })
+
+  it('snapToTargets lands every glide at its target (tab refocus)', () => {
+    const store = new VehicleStore()
+    store.update([row()], 1_000)
+    store.tick(1_000)
+    // Tab hidden: rAF paused, but SSE updates keep re-aiming from the
+    // frozen rendered position.
+    store.update([row({ lon: 13.5, bearing: 180 })], 6_000)
+    store.update([row({ lon: 13.6, bearing: 270 })], 11_000)
+    store.snapToTargets()
+    const vehicle = store.vehicles.get('T1')!
+    expect(vehicle.curLon).toBe(13.6)
+    expect(vehicle.fromLon).toBe(13.6)
+    expect(vehicle.curBearing).toBe(270)
+    // The next tick must not restart a sweep from the stale position.
+    store.tick(12_000)
+    expect(vehicle.curLon).toBe(13.6)
+  })
 })

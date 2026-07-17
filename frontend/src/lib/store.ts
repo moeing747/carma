@@ -52,6 +52,16 @@ export class VehicleStore {
   readonly vehicles = new Map<string, Vehicle>()
   /** Bumped whenever the set of vehicles changes (add/remove). */
   membershipVersion = 0
+  private readonly membershipListeners = new Set<() => void>()
+
+  /** Notify on every membership bump (add/remove); returns unsubscribe.
+   * Removal happens inside the rAF tick, so React state that must react to
+   * it (e.g. deselecting a removed vehicle) subscribes here rather than
+   * waiting for the next SSE batch. */
+  onMembershipChange(listener: () => void): () => void {
+    this.membershipListeners.add(listener)
+    return () => this.membershipListeners.delete(listener)
+  }
 
   update(rows: readonly PositionRow[], receivedAtMs: number): void {
     for (const row of rows) {
@@ -79,7 +89,7 @@ export class VehicleStore {
           curBearing: bearing,
           fade: 1,
         })
-        this.membershipVersion += 1
+        this.bumpMembership()
         continue
       }
       const glideMs = clampGlide(receivedAtMs - existing.lastSeenMs)
@@ -118,8 +128,27 @@ export class VehicleStore {
       vehicle.curLat = vehicle.fromLat + (vehicle.toLat - vehicle.fromLat) * f
       vehicle.curBearing = lerpBearing(vehicle.fromBearing, vehicle.toBearing, f)
     }
-    if (removed) this.membershipVersion += 1
+    if (removed) this.bumpMembership()
     return removed
+  }
+
+  /** Snap every glide to its target (from = cur = to).
+   *
+   * Called on tab refocus: while the rAF loop was paused, SSE updates kept
+   * re-aiming glides from the frozen cur* values, so resuming would sweep
+   * markers across the map for up to MAX_GLIDE_MS. */
+  snapToTargets(): void {
+    for (const vehicle of this.vehicles.values()) {
+      vehicle.fromLon = vehicle.curLon = vehicle.toLon
+      vehicle.fromLat = vehicle.curLat = vehicle.toLat
+      vehicle.fromBearing = vehicle.curBearing = vehicle.toBearing
+      vehicle.fromTimeMs = vehicle.toTimeMs
+    }
+  }
+
+  private bumpMembership(): void {
+    this.membershipVersion += 1
+    for (const listener of this.membershipListeners) listener()
   }
 }
 

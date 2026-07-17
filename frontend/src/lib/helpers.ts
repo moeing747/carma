@@ -108,18 +108,22 @@ export function lerpBearing(from: number, to: number, f: number): number {
   return (from + delta * f + 360) % 360
 }
 
+// Cached: constructing an Intl.DateTimeFormat is expensive (locale data)
+// and berlinSecondsOfDay is called from render paths.
+const BERLIN_TIME_FORMAT = new Intl.DateTimeFormat('en-GB', {
+  timeZone: 'Europe/Berlin',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  hour12: false,
+})
+
 /**
  * Wall-clock seconds since midnight in the feed's timezone (Europe/Berlin),
  * the time base GTFS service-day seconds compare against.
  */
 export function berlinSecondsOfDay(now: Date): number {
-  const parts = new Intl.DateTimeFormat('en-GB', {
-    timeZone: 'Europe/Berlin',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
-  }).formatToParts(now)
+  const parts = BERLIN_TIME_FORMAT.formatToParts(now)
   const get = (type: string) =>
     Number(parts.find((part) => part.type === type)?.value ?? '0')
   return (get('hour') % 24) * 3600 + get('minute') * 60 + get('second')

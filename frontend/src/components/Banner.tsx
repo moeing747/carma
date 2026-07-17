@@ -1,5 +1,5 @@
 interface BannerProps {
-  state: 'stale' | 'unavailable'
+  state: 'stale' | 'unavailable' | 'stream'
   subSeconds: number | null
 }
 
@@ -7,7 +7,9 @@ export function Banner({ state, subSeconds }: BannerProps) {
   const text =
     state === 'stale'
       ? 'Feed is stale — positions may be inaccurate'
-      : 'Feed unavailable — reconnecting'
+      : state === 'stream'
+        ? 'Position stream interrupted — reconnecting'
+        : 'Feed unavailable — reconnecting'
   const sub =
     subSeconds === null
       ? null

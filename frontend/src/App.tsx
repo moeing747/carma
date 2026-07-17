@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react'
 
 import { Banner } from './components/Banner'
 import { EmptyState } from './components/EmptyState'
@@ -31,6 +31,9 @@ export default function App() {
   const [activeLines, setActiveLines] = useState<ReadonlySet<string>>(new Set())
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [plan, setPlan] = useState<OptimizePlan | null>(null)
+  // Optimistic until the stream proves otherwise, so a healthy boot never
+  // flashes the reconnecting notice.
+  const [streamConnected, setStreamConnected] = useState(true)
   const feed = useFeedStatus()
 
   // The plan visualizes one line's snapshot; changing the filter drops it.
@@ -44,15 +47,23 @@ export default function App() {
         store.update(rows, receivedAtMs)
         setDataTick((tick) => tick + 1)
       },
+      onConnectionChange: setStreamConnected,
     })
     stream.start()
     return () => stream.stop()
   }, [store])
 
-  // Deselect once the selected vehicle ages out of the store.
+  // Membership changes happen inside MapCanvas's rAF tick (age-out) as well
+  // as per SSE batch; subscribing keeps deselection in step with removal.
+  const membershipVersion = useSyncExternalStore(
+    useCallback((onChange: () => void) => store.onMembershipChange(onChange), [store]),
+    () => store.membershipVersion,
+  )
+
+  // Deselect once the selected vehicle leaves the store (removal or age-out).
   useEffect(() => {
     if (selectedId !== null && !store.vehicles.has(selectedId)) setSelectedId(null)
-  }, [store, dataTick, selectedId])
+  }, [store, membershipVersion, selectedId])
 
   const lines = useMemo<LineStat[]>(() => {
     void dataTick // recompute key: the store mutates in place per SSE batch
@@ -66,16 +77,21 @@ export default function App() {
         group.delaySum += vehicle.delaySeconds
       }
     }
+    // An active filter stays listed at zero even when its last vehicle ends
+    // service — otherwise the row vanishes and the filter cannot be cleared.
+    for (const name of activeLines) {
+      if (!groups.has(name)) groups.set(name, { count: 0, delaySum: 0 })
+    }
     return Array.from(groups, ([name, group]) => ({
       name,
       count: group.count,
-      avgDelaySeconds: group.delaySum / group.count,
+      avgDelaySeconds: group.count === 0 ? null : group.delaySum / group.count,
     })).sort((a, b) => {
       const kindDelta = KIND_ORDER[kindOf(a.name)] - KIND_ORDER[kindOf(b.name)]
       if (kindDelta !== 0) return kindDelta
       return a.name.localeCompare(b.name, undefined, { numeric: true })
     })
-  }, [store, dataTick])
+  }, [store, dataTick, activeLines])
 
   const stats = useMemo(() => {
     void dataTick // recompute key: the store mutates in place per SSE batch
@@ -140,7 +156,19 @@ export default function App() {
 
   const loaded = dataTick > 0
   const total = store.vehicles.size
-  const showEmpty = loaded && feed.state === 'fresh' && stats.inView === 0
+  // "No vehicles" is only a truthful diagnosis while both the feed and the
+  // position stream are actually delivering.
+  const showEmpty = loaded && streamConnected && feed.state === 'fresh' && stats.inView === 0
+
+  // One banner at a time; a dead stream trumps feed staleness because it
+  // freezes the map regardless of what the poller does.
+  const banner = !streamConnected ? (
+    <Banner state="stream" subSeconds={null} />
+  ) : feed.state === 'unavailable' ? (
+    <Banner state="unavailable" subSeconds={feed.unavailableForSeconds} />
+  ) : feed.state === 'stale' ? (
+    <Banner state="stale" subSeconds={feed.ageSeconds} />
+  ) : null
 
   return (
     <div className="app">
@@ -149,20 +177,20 @@ export default function App() {
         activeLines={activeLines}
         selectedId={selectedId}
         plan={plan}
+        feedState={feed.state}
+        feedAgeSeconds={feed.state === 'stale' ? feed.ageSeconds : feed.unavailableForSeconds}
         onSelect={setSelectedId}
         onBoundsChange={handleBounds}
       />
       <Header feedState={feed.state} feedAgeSeconds={feed.ageSeconds} vehicleCount={total} />
-      {feed.state === 'stale' && <Banner state="stale" subSeconds={feed.ageSeconds} />}
-      {feed.state === 'unavailable' && (
-        <Banner state="unavailable" subSeconds={feed.unavailableForSeconds} />
-      )}
+      {banner}
       <LineFilter lines={lines} activeLines={activeLines} onToggle={toggleLine} />
       <LegendStats
         onTimePct={stats.onTimePct}
         inView={stats.inView}
         total={total}
         worstLine={stats.worstLine}
+        streamConnected={streamConnected}
       />
       <OptimizePanel
         activeLines={activeLines}
@@ -173,7 +201,12 @@ export default function App() {
       {selectedId !== null && (
         <SelectedPanel tripId={selectedId} store={store} onClose={() => setSelectedId(null)} />
       )}
-      {showEmpty && <EmptyState />}
+      {showEmpty && (
+        <EmptyState
+          filteredLineCount={activeLines.size}
+          onClearFilters={() => setActiveLines(new Set())}
+        />
+      )}
     </div>
   )
 }

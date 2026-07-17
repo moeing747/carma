@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { badgeColorsFor, delayColor, delayLabel } from '../lib/helpers'
 import {
@@ -25,23 +25,39 @@ interface OptimizePanelProps {
 export function OptimizePanel({ activeLines, countForLine, plan, onPlan }: OptimizePanelProps) {
   const [running, setRunning] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const controllerRef = useRef<AbortController | null>(null)
   const gate = optimizeGate(activeLines, countForLine)
+  const gatedLine = gate.kind === 'ready' ? gate.line : null
+
+  // A resolving optimize call must never deliver a plan for a previous line
+  // filter: abort in-flight requests when the gated line changes (and on
+  // unmount).
+  useEffect(() => () => controllerRef.current?.abort(), [gatedLine])
 
   const run = useCallback(() => {
     if (gate.kind !== 'ready' || running) return
+    controllerRef.current?.abort()
+    const controller = new AbortController()
+    controllerRef.current = controller
     setRunning(true)
     setError(null)
     fetch('/api/v1/optimize', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ route_short_name: gate.line }),
+      signal: controller.signal,
     })
       .then(async (response) => {
-        const body = (await response.json()) as OptimizePlan & { error?: string }
-        if (!response.ok) throw new Error(body.error ?? `optimize ${response.status}`)
-        onPlan(body)
+        if (!response.ok) {
+          // The backend answers errors as JSON, but never assume a parsable
+          // body on a failure status (proxies serve HTML).
+          const body = (await response.json().catch(() => null)) as { error?: string } | null
+          throw new Error(body?.error ?? `optimize ${response.status}`)
+        }
+        onPlan((await response.json()) as OptimizePlan)
       })
       .catch((cause: unknown) => {
+        if (cause instanceof DOMException && cause.name === 'AbortError') return
         onPlan(null)
         setError(cause instanceof Error ? cause.message : 'optimize failed')
       })

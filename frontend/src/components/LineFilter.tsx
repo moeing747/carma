@@ -5,7 +5,8 @@ import { badgeColorsFor, delayColor, delayLabel } from '../lib/helpers'
 export interface LineStat {
   name: string
   count: number
-  avgDelaySeconds: number
+  /** null when the line currently has no vehicles (kept listed while filtered). */
+  avgDelaySeconds: number | null
 }
 
 interface LineFilterProps {
@@ -56,9 +57,13 @@ export function LineFilter({ lines, activeLines, onToggle }: LineFilterProps) {
                 {line.name || '—'}
               </span>
               <span className="count">{line.count} veh</span>
-              <span className="delay" style={{ color: delayColor(line.avgDelaySeconds) }}>
-                {delayLabel(line.avgDelaySeconds)}
-              </span>
+              {line.avgDelaySeconds === null ? (
+                <span className="delay">—</span>
+              ) : (
+                <span className="delay" style={{ color: delayColor(line.avgDelaySeconds) }}>
+                  {delayLabel(line.avgDelaySeconds)}
+                </span>
+              )}
             </button>
           )
         })}

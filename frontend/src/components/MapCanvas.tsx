@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { WebMercatorViewport, type MapViewState, type PickingInfo } from '@deck.gl/core'
 import { IconLayer, ScatterplotLayer, TextLayer } from '@deck.gl/layers'
 import DeckGL from '@deck.gl/react'
@@ -6,9 +6,16 @@ import { Map } from 'react-map-gl/maplibre'
 import 'maplibre-gl/dist/maplibre-gl.css'
 
 import { buildDartAtlas } from '../lib/icons'
-import { badgeColorsFor, delayColor, delayColorRgb, delayLabel } from '../lib/helpers'
+import {
+  badgeColorsFor,
+  delayColor,
+  delayColorRgb,
+  delayLabel,
+  type FeedState,
+} from '../lib/helpers'
 import { formatHold, holdsByTrip, planTripIds } from '../lib/optimize'
 import type { Vehicle, VehicleStore } from '../lib/store'
+import { trailingThrottle } from '../lib/throttle'
 import type { OptimizePlan } from '../lib/types'
 
 const INITIAL_VIEW_STATE: MapViewState = {
@@ -34,6 +41,11 @@ const TOOLTIP_OFFSET = 16
 const TOOLTIP_WIDTH = 200
 const TOOLTIP_HEIGHT = 76
 
+const BOUNDS_THROTTLE_MS = 250
+/** Positions are dead-reckoned from the last known delays while the feed is
+ * degraded; the layer dims to this opacity factor to say so. */
+const DEGRADED_DIM = 0.35
+
 export type Bounds = [minLon: number, minLat: number, maxLon: number, maxLat: number]
 
 interface HoverState {
@@ -48,6 +60,9 @@ interface MapCanvasProps {
   selectedId: string | null
   /** Advisory optimize plan to visualize; null hides the overlay. */
   plan: OptimizePlan | null
+  feedState: FeedState
+  /** Age of the last feed data in seconds, for the degraded tooltip. */
+  feedAgeSeconds: number | null
   onSelect: (tripId: string | null) => void
   onBoundsChange: (bounds: Bounds) => void
 }
@@ -71,6 +86,8 @@ export function MapCanvas({
   activeLines,
   selectedId,
   plan,
+  feedState,
+  feedAgeSeconds,
   onSelect,
   onBoundsChange,
 }: MapCanvasProps) {
@@ -78,8 +95,18 @@ export function MapCanvas({
   const [hover, setHover] = useState<HoverState | null>(null)
   const atlas = useMemo(() => buildDartAtlas(), [])
   const containerRef = useRef<HTMLDivElement>(null)
-  const lastBoundsNotify = useRef(0)
   const perfRef = useRef({ frames: 0, busyMs: 0, windowStart: performance.now() })
+
+  // While the tab is hidden the rAF loop is paused but SSE keeps re-aiming
+  // glides from frozen cur* values; snapping on refocus prevents an
+  // up-to-MAX_GLIDE_MS sweep of every marker across the map.
+  useEffect(() => {
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') store.snapToTargets()
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => document.removeEventListener('visibilitychange', onVisibility)
+  }, [store])
 
   // The animation loop: advance the interpolation store, then re-render so
   // the layers below rebuild from the mutated cur* fields.
@@ -155,6 +182,10 @@ export function MapCanvas({
     return rows
   }, [store, membership, hover, selectedId])
 
+  // Stale/unavailable feed: positions keep gliding from the last known
+  // delays (dead reckoning), so the layer dims to flag reduced confidence.
+  const feedDegraded = feedState === 'stale' || feedState === 'unavailable'
+
   const layers = [
     new IconLayer<Vehicle>({
       id: 'vehicles',
@@ -173,7 +204,7 @@ export function MapCanvas({
             : SIZE_BASE,
       getColor: (vehicle) => {
         const [r, g, b] = delayColorRgb(vehicle.delaySeconds)
-        return [r, g, b, Math.round(255 * vehicle.fade)]
+        return [r, g, b, Math.round(255 * vehicle.fade * (feedDegraded ? DEGRADED_DIM : 1))]
       },
       pickable: true,
       updateTriggers: {
@@ -229,24 +260,25 @@ export function MapCanvas({
     }),
   ]
 
-  const notifyBounds = useCallback(
-    (viewState: MapViewState) => {
-      const now = performance.now()
-      if (now - lastBoundsNotify.current < 250) return
-      lastBoundsNotify.current = now
-      const container = containerRef.current
-      const viewport = new WebMercatorViewport({
-        ...viewState,
-        width: container?.clientWidth ?? window.innerWidth,
-        height: container?.clientHeight ?? window.innerHeight,
-      })
-      onBoundsChange(viewport.getBounds() as Bounds)
-    },
+  // Leading + trailing throttle: the mount-time call always lands and the
+  // final view state of a short interaction is emitted after the interval.
+  const notifyBounds = useMemo(
+    () =>
+      trailingThrottle(BOUNDS_THROTTLE_MS, (viewState: MapViewState) => {
+        const container = containerRef.current
+        const viewport = new WebMercatorViewport({
+          ...viewState,
+          width: container?.clientWidth ?? window.innerWidth,
+          height: container?.clientHeight ?? window.innerHeight,
+        })
+        onBoundsChange(viewport.getBounds() as Bounds)
+      }),
     [onBoundsChange],
   )
 
   useEffect(() => {
     notifyBounds(INITIAL_VIEW_STATE)
+    return () => notifyBounds.cancel()
   }, [notifyBounds])
 
   const hoveredVehicle = hover === null ? null : (store.vehicles.get(hover.tripId) ?? null)
@@ -256,6 +288,8 @@ export function MapCanvas({
       x={hover.x}
       y={hover.y}
       container={containerRef.current}
+      feedDegraded={feedDegraded}
+      feedAgeSeconds={feedAgeSeconds}
     />
   )
 
@@ -293,17 +327,28 @@ function VehicleTooltip({
   x,
   y,
   container,
+  feedDegraded,
+  feedAgeSeconds,
 }: {
   vehicle: Vehicle
   x: number
   y: number
   container: HTMLDivElement | null
+  feedDegraded: boolean
+  feedAgeSeconds: number | null
 }) {
   const maxX = (container?.clientWidth ?? window.innerWidth) - TOOLTIP_WIDTH - 8
   const maxY = (container?.clientHeight ?? window.innerHeight) - TOOLTIP_HEIGHT - 8
   const left = Math.min(x + TOOLTIP_OFFSET, Math.max(maxX, 8))
   const top = Math.min(y + TOOLTIP_OFFSET, Math.max(maxY, 8))
   const agoSeconds = Math.max(0, Math.round((Date.now() - vehicle.computedAtMs) / 1000))
+  // computed_at is stamped by the projector even while the poller is down;
+  // when the feed is degraded, the honest age is the feed's, not the row's.
+  const agoText = feedDegraded
+    ? feedAgeSeconds === null
+      ? 'feed down'
+      : `feed ${Math.round(feedAgeSeconds)}s old`
+    : `${agoSeconds}s ago`
   const badge = badgeStyle(vehicle.line)
   return (
     <div className="tooltip" style={{ left, top }}>
@@ -317,7 +362,7 @@ function VehicleTooltip({
         <span className="tooltip-delay" style={{ color: delayColor(vehicle.delaySeconds) }}>
           {delayLabel(vehicle.delaySeconds)}
         </span>
-        <span className="tooltip-ago">{agoSeconds}s ago</span>
+        <span className="tooltip-ago">{agoText}</span>
       </div>
     </div>
   )

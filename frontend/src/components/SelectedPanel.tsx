@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { memo, useEffect, useState } from 'react'
 
 import {
   badgeColorsFor,
@@ -114,7 +114,10 @@ export function SelectedPanel({ tripId, store, onClose }: SelectedPanelProps) {
   )
 }
 
-function ScheduleStrip({
+// Memoized and self-ticking at 1 Hz: the parent re-renders every frame for
+// the technical block, but a minutes-granularity strip has no business
+// recomputing (and re-reading the Berlin wall clock) at 60 fps.
+const ScheduleStrip = memo(function ScheduleStrip({
   schedule,
   error,
   delaySeconds,
@@ -123,6 +126,12 @@ function ScheduleStrip({
   error: boolean
   delaySeconds: number
 }) {
+  const [nowSeconds, setNowSeconds] = useState(() => berlinSecondsOfDay(new Date()))
+  useEffect(() => {
+    const timer = setInterval(() => setNowSeconds(berlinSecondsOfDay(new Date())), 1_000)
+    return () => clearInterval(timer)
+  }, [])
+
   if (error) return <div className="schedule-note">schedule unavailable</div>
   if (schedule === null) return <div className="schedule-note">loading…</div>
   const stops = schedule.stops.filter(
@@ -133,12 +142,12 @@ function ScheduleStrip({
   const first = stops[0].arrival_seconds ?? stops[0].departure_seconds ?? 0
   const last =
     stops[stops.length - 1].arrival_seconds ?? stops[stops.length - 1].departure_seconds ?? first
-  const effectiveNow = serviceNowSeconds(berlinSecondsOfDay(new Date()), first, last)
+  const effectiveNow = serviceNowSeconds(nowSeconds, first, last)
   const isPast = (index: number) => {
     const stop = stops[index]
-    const leaveAt =
-      (stop.departure_seconds ?? stop.arrival_seconds ?? 0) +
-      (schedule.delay_seconds ?? delaySeconds)
+    // The live store delay updates every SSE batch; the fetched schedule's
+    // delay is a snapshot from selection time and goes stale.
+    const leaveAt = (stop.departure_seconds ?? stop.arrival_seconds ?? 0) + delaySeconds
     return leaveAt <= effectiveNow
   }
   let nextIndex = stops.findIndex((_, index) => !isPast(index))
@@ -167,4 +176,4 @@ function ScheduleStrip({
       })}
     </div>
   )
-}
+})
