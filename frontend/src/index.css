@@ -184,6 +184,10 @@ a:hover{color:#8ef000;}
 .optimize-row .hold b{color:var(--accent);font-weight:600;}
 .optimize-row .hold .at{color:var(--text-3);}
 .optimize-row .hold.none{color:var(--text-3);}
+/* Hover tooltip with the unabbreviated instruction; position:fixed escapes
+   the panel's overflow clipping without any JS. */
+.optimize-row .hold[data-full]{cursor:default;}
+.optimize-row .hold[data-full]:hover::after{content:attr(data-full);position:fixed;transform:translate(-8px,-34px);background:var(--glass-2);border:1px solid var(--hairline-strong);border-radius:var(--r-1);backdrop-filter:blur(var(--blur));-webkit-backdrop-filter:blur(var(--blur));box-shadow:var(--shadow);padding:7px 10px;font-family:var(--f-mono);font-size:var(--t-11);color:var(--text);white-space:nowrap;z-index:60;pointer-events:none;}
 .optimize-foot{padding:var(--s-2) var(--s-4) var(--s-3);border-top:1px solid var(--hairline);font-family:var(--f-mono);font-size:10px;color:var(--text-3);letter-spacing:0.04em;}
 
 /* ---- tooltip ---- */

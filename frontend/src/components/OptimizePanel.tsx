@@ -141,7 +141,10 @@ function PlanResult({ plan }: { plan: OptimizePlan }) {
               {delayLabel(vehicle.delay_seconds)}
             </span>
             {vehicle.hold_seconds > 0 ? (
-              <span className="hold" title={`HOLD ${formatHold(vehicle.hold_seconds)} at ${vehicle.next_stop_name}`}>
+              <span
+                className="hold"
+                data-full={`HOLD ${formatHold(vehicle.hold_seconds)} at ${vehicle.next_stop_name}`}
+              >
                 HOLD <b>{formatHold(vehicle.hold_seconds)}</b>
                 <span className="at"> at {abbreviateStopName(vehicle.next_stop_name)}</span>
               </span>
