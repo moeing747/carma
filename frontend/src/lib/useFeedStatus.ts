@@ -14,10 +14,11 @@ export interface FeedStatus {
 }
 
 /** Polls /api/v1/feed every 5s; "no_data" and fetch failures both read as
- * unavailable. */
+ * unavailable. Starts as "connecting" so the first render never flashes a
+ * degraded state before the first report has arrived. */
 export function useFeedStatus(): FeedStatus {
   const [status, setStatus] = useState<FeedStatus>({
-    state: 'unavailable',
+    state: 'connecting',
     ageSeconds: null,
     unavailableForSeconds: null,
   })

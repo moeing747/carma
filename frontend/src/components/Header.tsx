@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { feedAgeLabel, type FeedState } from '../lib/helpers'
 
 const FEED_META: Record<FeedState, { label: string; colorVar: string }> = {
+  connecting: { label: 'CONNECTING', colorVar: 'var(--text-2)' },
   fresh: { label: 'FRESH', colorVar: 'var(--ok)' },
   stale: { label: 'STALE', colorVar: 'var(--warn)' },
   unavailable: { label: 'UNAVAILABLE', colorVar: 'var(--bad)' },

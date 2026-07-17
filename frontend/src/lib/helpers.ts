@@ -5,7 +5,7 @@
 
 export type LineKind = 'u-bahn' | 's-bahn' | 'tram' | 'bus' | 'other'
 
-export type FeedState = 'fresh' | 'stale' | 'unavailable'
+export type FeedState = 'connecting' | 'fresh' | 'stale' | 'unavailable'
 
 /** Delay ramp CSS custom-property values (kept in sync with index.css). */
 export const RAMP = {

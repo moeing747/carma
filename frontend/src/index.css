@@ -56,6 +56,7 @@ a:hover{color:#8ef000;}
 .feed-pill.unavailable{border-color:rgba(255,77,77,0.4);}
 .feed-pill .dot{width:8px;height:8px;border-radius:50%;}
 .feed-pill.stale .dot{animation:carma-pulse 1.6s ease-in-out infinite;}
+.feed-pill.connecting .dot{animation:carma-pulse 1.2s ease-in-out infinite;}
 .feed-pill .label{font-size:var(--t-12);font-weight:600;letter-spacing:0.08em;}
 .feed-pill .age{font-family:var(--f-mono);font-size:var(--t-12);color:var(--text-2);font-variant-numeric:tabular-nums;}
 .counter-pill{display:flex;align-items:center;gap:var(--s-2);flex:none;white-space:nowrap;padding:6px 14px;background:var(--glass);border:1px solid var(--hairline);border-radius:999px;backdrop-filter:blur(var(--blur));-webkit-backdrop-filter:blur(var(--blur));box-shadow:var(--shadow);pointer-events:auto;}
