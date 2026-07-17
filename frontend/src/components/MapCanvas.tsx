@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { WebMercatorViewport, type MapViewState, type PickingInfo } from '@deck.gl/core'
-import { IconLayer, ScatterplotLayer } from '@deck.gl/layers'
+import { IconLayer, ScatterplotLayer, TextLayer } from '@deck.gl/layers'
 import DeckGL from '@deck.gl/react'
 import { Map } from 'react-map-gl/maplibre'
 import 'maplibre-gl/dist/maplibre-gl.css'
 
 import { buildDartAtlas } from '../lib/icons'
 import { badgeColorsFor, delayColor, delayColorRgb, delayLabel } from '../lib/helpers'
+import { formatHold, holdsByTrip, planTripIds } from '../lib/optimize'
 import type { Vehicle, VehicleStore } from '../lib/store'
+import type { OptimizePlan } from '../lib/types'
 
 const INITIAL_VIEW_STATE: MapViewState = {
   longitude: 13.405,
@@ -24,6 +26,8 @@ const SIZE_HOVER = 28
 const SIZE_SELECTED = 24
 const HALO_RADIUS = 11
 const HALO_WIDTH = 1.4
+const PLAN_RING_RADIUS = 13
+const PLAN_RING_WIDTH = 1.2
 const ACCENT_RGB: [number, number, number] = [115, 215, 0]
 
 const TOOLTIP_OFFSET = 16
@@ -42,6 +46,8 @@ interface MapCanvasProps {
   store: VehicleStore
   activeLines: ReadonlySet<string>
   selectedId: string | null
+  /** Advisory optimize plan to visualize; null hides the overlay. */
+  plan: OptimizePlan | null
   onSelect: (tripId: string | null) => void
   onBoundsChange: (bounds: Bounds) => void
 }
@@ -64,6 +70,7 @@ export function MapCanvas({
   store,
   activeLines,
   selectedId,
+  plan,
   onSelect,
   onBoundsChange,
 }: MapCanvasProps) {
@@ -112,6 +119,27 @@ export function MapCanvas({
     if (activeLines.size === 0) return all
     return all.filter((vehicle) => activeLines.has(vehicle.line))
   }, [store, membership, activeLines])
+
+  // Optimize overlay data: an accent ring on every vehicle the plan covers,
+  // plus a hold chip ("HOLD +M:SS") beside each held vehicle. Chips were
+  // chosen over ghost markers at the projected positions: at night-fleet
+  // density ghosts double the marker count and read as extra vehicles,
+  // while a labeled chip keeps the advice unambiguous.
+  const planData = useMemo(() => {
+    void membership // recompute key: the store mutates its map in place
+    if (plan === null) return { rings: [] as Vehicle[], chips: [] as { vehicle: Vehicle; hold: number }[] }
+    const rings: Vehicle[] = []
+    for (const tripId of planTripIds(plan)) {
+      const vehicle = store.vehicles.get(tripId)
+      if (vehicle !== undefined) rings.push(vehicle)
+    }
+    const chips: { vehicle: Vehicle; hold: number }[] = []
+    for (const [tripId, hold] of holdsByTrip(plan)) {
+      const vehicle = store.vehicles.get(tripId)
+      if (vehicle !== undefined) chips.push({ vehicle, hold })
+    }
+    return { rings, chips }
+  }, [store, membership, plan])
 
   const haloData = useMemo(() => {
     void membership // recompute key: the store mutates its map in place
@@ -167,6 +195,36 @@ export function MapCanvas({
       getLineWidth: HALO_WIDTH,
       getLineColor: (row) =>
         row.accent ? [...ACCENT_RGB, 255] : [...delayColorRgb(row.vehicle.delaySeconds), 255],
+      updateTriggers: { getPosition: frame },
+    }),
+    new ScatterplotLayer<Vehicle>({
+      id: 'optimize-rings',
+      data: planData.rings,
+      filled: false,
+      stroked: true,
+      radiusUnits: 'pixels',
+      lineWidthUnits: 'pixels',
+      getPosition: (vehicle) => [vehicle.curLon, vehicle.curLat],
+      getRadius: PLAN_RING_RADIUS,
+      getLineWidth: PLAN_RING_WIDTH,
+      getLineColor: [...ACCENT_RGB, 165],
+      updateTriggers: { getPosition: frame },
+    }),
+    new TextLayer<{ vehicle: Vehicle; hold: number }>({
+      id: 'optimize-hold-chips',
+      data: planData.chips,
+      getPosition: (row) => [row.vehicle.curLon, row.vehicle.curLat],
+      getText: (row) => `HOLD ${formatHold(row.hold)}`,
+      getSize: 11,
+      getColor: [...ACCENT_RGB, 255],
+      getPixelOffset: [0, -26],
+      fontFamily: 'IBM Plex Mono, ui-monospace, monospace',
+      fontWeight: 600,
+      background: true,
+      getBackgroundColor: [15, 19, 27, 235],
+      backgroundPadding: [7, 4, 7, 4],
+      getBorderColor: [...ACCENT_RGB, 110],
+      getBorderWidth: 1,
       updateTriggers: { getPosition: frame },
     }),
   ]

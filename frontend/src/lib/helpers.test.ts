@@ -44,6 +44,11 @@ describe('delayLabel', () => {
     expect(delayLabel(31)).toBe('+0:31')
     expect(delayLabel(725)).toBe('+12:05')
   })
+  it('rounds fractional per-line averages to whole seconds', () => {
+    expect(delayLabel(67.5)).toBe('+1:08')
+    expect(delayLabel(77.142857)).toBe('+1:17')
+    expect(delayLabel(30.4)).toBe('On time')
+  })
 })
 
 describe('delayWord', () => {

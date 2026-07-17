@@ -2,9 +2,9 @@
 
 # Carma
 
-Real-time Berlin transit monitoring and network-planning demo. Carma ingests the open VBB GTFS-RT feed (TripUpdates for ~6,600 trips), pushes it through a Kafka pipeline into a typed Python core, and renders live vehicles on a WebGL map. The feed publishes **no GPS**: vehicle positions are **derived** by combining the static schedule with live delays and projecting trip progress onto route geometry in PostGIS — which makes positions continuous by construction and smooth animation free. A mock optimization engine sits behind the same port a real Operations-Research engine would use; the engineering shell around it is the point, not the algorithm.
+Real-time Berlin transit monitoring and network-planning demo. Carma ingests the open VBB GTFS-RT feed (TripUpdates for ~6,600 trips), pushes it through a Kafka pipeline into a typed Python core, and renders live vehicles on a WebGL map. The feed publishes **no GPS**: vehicle positions are **derived** by combining the static schedule with live delays and projecting trip progress onto route geometry in PostGIS — which makes positions continuous by construction and smooth animation free. A deliberately naive optimization engine sits behind the same port a real Operations-Research engine would use; the engineering shell around it is the point, not the algorithm.
 
-> **Status: under construction.** The hexagonal core, decoder, realtime ingest pipeline (poller → Kafka → PostGIS), position derivation engine (`/api/v1/positions` + SSE stream), and the live dashboard are in place; the optimization panel is landing next.
+> **Status: under construction.** The hexagonal core, decoder, realtime ingest pipeline (poller → Kafka → PostGIS), position derivation engine (`/api/v1/positions` + SSE stream), the live dashboard, and the optimization shell (`POST /api/v1/optimize` + map overlay) are in place; ops polish (K8s manifests, Terraform stub, structured logging) is landing next.
 
 ## Quickstart
 
@@ -56,6 +56,21 @@ Frontend: React + TypeScript + Vite, MapLibre GL basemap with deck.gl layers on 
 The dashboard subscribes to the SSE delta stream (`/api/v1/positions/stream`, cursor-resumed reconnects with backoff) into a client-side store that keeps, per trip, the previous rendered state and the latest server state. A `requestAnimationFrame` loop interpolates each vehicle between the two (linear in lon/lat, shortest-arc in bearing), so markers glide between the ~5s server recomputes instead of teleporting; a new server row always re-aims the glide from the currently rendered position. Vehicles the stream stops mentioning fade out and are dropped. On top of that: delay-ramp coloring, a collapsible per-line filter, on-time/in-view/worst-line stats, feed-health pill and stale/unavailable banners driven by `/api/v1/feed`, and a per-vehicle panel with the trip's schedule strip (`/api/v1/trips/<id>/schedule`) marking past and next stops from the live delay.
 
 **Performance.** The deck.gl `IconLayer` reuses its data array (rebuilt only when fleet membership or the line filter changes) and recomputes attributes per frame via `updateTriggers`; the interpolation tick mutates vehicle objects in place. Measured with Chromium on an Apple-silicon MacBook (120 Hz display), sampling frame-to-frame `requestAnimationFrame` deltas over 5s windows: the live night fleet (~250 vehicles) averaged 9.3 ms/frame (~108 fps, p95 13.3 ms); with the store inflated to 2,200 vehicles (daytime fleet size, refreshed through the same pipeline on the real 5s cadence) it averaged 8.4 ms/frame (~119 fps, p95 9.3 ms) — display-limited, with the interpolation tick itself at ~0.15 ms/frame. Numbers are from `window.__carmaPerf`, which the app maintains at runtime.
+
+## Optimization shell
+
+![Optimize panel: recommended holds evening out headways on one line](docs/media/optimize.png)
+
+Domain models in, typed plan out, engine behind a port: `OptimizeLineHeadways` (application) gathers a line's live vehicles, places them on a pattern-time axis, and hands them to whatever stands behind the `OptimizationEngine` port — the HTTP endpoint, use case, and dashboard never know which. **The shipped algorithm is naive on purpose**: the exhibit is the engineering shell a real Operations-Research engine would drop into, not the OR itself.
+
+The problem is delay-aware headway re-spacing (bus-bunching mitigation). `POST /api/v1/optimize` with `{"route_short_name": "M10"}` returns advisory hold times (0–300 s) at each vehicle's next stop for the line's busiest direction, chosen so projected headways even out — per-vehicle headway before/after plus the headway standard deviation the plan achieves. Nothing is applied anywhere; the dashboard's OPTIMIZE panel (visible with exactly one line filtered) draws the plan as accent rings and hold chips on the live map.
+
+Two interchangeable engines prove the port honest, selected via `CARMA_OPTIMIZER`:
+
+- `cpsat` (default) — a tiny [OR-Tools](https://developers.google.com/optimization) CP-SAT model, ~30 lines: minimize the maximum deviation from the mean headway, holds bounded, no overtaking, ties broken toward fewer held seconds (`adapters/optimize_cpsat.py`).
+- `heuristic` — a solver-free greedy pass placing each follower one mean headway behind the vehicle ahead (`adapters/optimize_heuristic.py`).
+
+Both are held to the same contract by shared property tests (holds within bounds, order preserved, spread never worse than doing nothing), and the pure headway math lives in `domain/headway.py`. Swapping in a real engine means implementing one `solve()` method.
 
 ## Commit conventions
 

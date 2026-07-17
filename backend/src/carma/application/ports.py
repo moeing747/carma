@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
+from carma.domain.headway import MAX_HOLD_SECONDS, HeadwayPlan, LineVehicle
 from carma.domain.models import (
     BoundingBox,
     Coordinate,
@@ -94,22 +95,29 @@ class VehiclePositionReader(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class OptimizationRequest:
-    route_ids: tuple[str, ...]
-    horizon_minutes: int
+    """One line's live state on the pattern-time axis (see carma.domain.headway)."""
 
-
-@dataclass(frozen=True, slots=True)
-class TripReassignment:
-    trip_id: TripId
-    from_vehicle_id: str
-    to_vehicle_id: str
-
-
-@dataclass(frozen=True, slots=True)
-class OptimizationResult:
-    reassignments: tuple[TripReassignment, ...]
-    objective_delay_seconds: int
+    route_short_name: str
+    direction: str
+    """The headsign shared by these vehicles; one direction per request."""
+    vehicles: tuple[LineVehicle, ...]
+    """Ordered leader-first (largest position_seconds first)."""
+    max_hold_seconds: int = MAX_HOLD_SECONDS
 
 
 class OptimizationEngine(Protocol):
-    def solve(self, request: OptimizationRequest) -> OptimizationResult: ...
+    """Computes hold times that even out a line's headways.
+
+    The port a real Operations-Research engine would stand behind; the
+    shipped implementations (CP-SAT and a greedy heuristic) are naive on
+    purpose. Implementations must return recommendations in the request's
+    vehicle order and never worsen the headway spread (zero holds are
+    always available).
+    """
+
+    @property
+    def name(self) -> str:
+        """Short identifier reported in every plan (e.g. "cpsat")."""
+        ...
+
+    def solve(self, request: OptimizationRequest) -> HeadwayPlan: ...

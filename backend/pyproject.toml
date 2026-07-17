@@ -11,6 +11,7 @@ dependencies = [
     "flask>=3.0",
     "confluent-kafka>=2.5",
     "gtfs-realtime-bindings>=1.0",
+    "ortools>=9.10",
     "psycopg[binary]>=3.2",
     "pydantic>=2.7",
 ]
@@ -49,6 +50,11 @@ explicit_package_bases = true
 [[tool.mypy.overrides]]
 # gtfs-realtime-bindings ships generated protobuf modules without py.typed.
 module = "google.transit.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# ortools types its cp_model subpackage but ships no root py.typed marker.
+module = "ortools.*"
 ignore_missing_imports = true
 
 [tool.ruff]

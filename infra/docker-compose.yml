@@ -74,6 +74,8 @@ services:
     environment:
       KAFKA_BROKERS: kafka:19092
       DATABASE_URL: postgres://carma:carma@postgis:5432/carma
+      # Which OptimizationEngine implementation serves /api/v1/optimize.
+      CARMA_OPTIMIZER: ${CARMA_OPTIMIZER:-cpsat}
     healthcheck:
       # The slim image ships no curl; stdlib urllib does the probe.
       test:

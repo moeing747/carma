@@ -41,11 +41,13 @@ export function delayColorRgb(delaySeconds: number): [number, number, number] {
   return RAMP_RGB[delayBucket(delaySeconds)]
 }
 
-/** Spec: |d| <= 30 -> "On time"; else sign + M:SS (e.g. "+3:00", "−1:05"). */
+/** Spec: |d| <= 30 -> "On time"; else sign + M:SS (e.g. "+3:00", "−1:05").
+ * Fractional inputs (per-line averages) round to whole seconds first. */
 export function delayLabel(delaySeconds: number): string {
-  if (Math.abs(delaySeconds) <= 30) return 'On time'
-  const sign = delaySeconds < 0 ? '−' : '+'
-  const magnitude = Math.abs(delaySeconds)
+  const rounded = Math.round(delaySeconds)
+  if (Math.abs(rounded) <= 30) return 'On time'
+  const sign = rounded < 0 ? '−' : '+'
+  const magnitude = Math.abs(rounded)
   const minutes = Math.floor(magnitude / 60)
   const seconds = magnitude % 60
   return `${sign}${minutes}:${String(seconds).padStart(2, '0')}`

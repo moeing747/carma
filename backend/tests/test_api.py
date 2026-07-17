@@ -5,6 +5,8 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from flask import Flask
 
+from carma.application.ports import OptimizationRequest
+from carma.domain.headway import HeadwayPlan, build_plan
 from carma.domain.models import (
     BoundingBox,
     Coordinate,
@@ -317,3 +319,149 @@ def test_trip_schedule_unknown_trip_is_404() -> None:
 
     assert response.status_code == 404
     assert "error" in response.get_json()
+
+
+# ---- POST /api/v1/optimize ----
+
+OPTIMIZE_AT = datetime(2026, 7, 16, 8, 15)  # naive feed-local, mid-pattern
+
+# 08:00 -> 08:10/08:11 -> 08:20 pattern shared by the optimize test trips.
+OPTIMIZE_PATTERN: tuple[ScheduledStop, ...] = (
+    _stop(1, "Alpha", None, 8 * 3600),
+    _stop(2, "Beta", 8 * 3600 + 600, 8 * 3600 + 660),
+    _stop(3, "Gamma", 8 * 3600 + 1200, None),
+)
+
+
+class FakeOptimizationEngine:
+    name = "fake"
+
+    def solve(self, request: OptimizationRequest) -> HeadwayPlan:
+        # Hold the tail vehicle 60s; enough plan shape to exercise the wire.
+        holds = [0] * (len(request.vehicles) - 1) + [60]
+        return build_plan(request.vehicles, holds)
+
+
+def _line_position(trip_id: str, delay: int, headsign: str = "North") -> VehiclePosition:
+    return VehiclePosition(
+        trip_id=TripId(trip_id),
+        route_id="R1",
+        route_short_name="M1",
+        lat=52.52,
+        lon=13.41,
+        bearing=None,
+        delay_seconds=delay,
+        computed_at=COMPUTED_AT,
+        headsign=headsign,
+    )
+
+
+def _optimize_app(
+    rows: tuple[VehiclePosition, ...],
+    engine: FakeOptimizationEngine | None = None,
+) -> Flask:
+    schedules = {row.trip_id.value: OPTIMIZE_PATTERN for row in rows}
+    return create_app(
+        feed_status_source=lambda: None,
+        position_reader_factory=lambda: nullcontext(StubPositionReader(rows)),
+        schedule_repository_factory=lambda: nullcontext(StubScheduleRepository(schedules)),
+        optimization_engine=engine if engine is not None else FakeOptimizationEngine(),
+        now_source=lambda: OPTIMIZE_AT,
+    )
+
+
+BUNCHED_LINE = (
+    _line_position("A", delay=0),  # position 900
+    _line_position("B", delay=780),  # position 120 (bunched onto C)
+    _line_position("C", delay=840),  # position 60
+)
+
+
+def test_optimize_returns_the_advisory_plan() -> None:
+    client = _optimize_app(BUNCHED_LINE).test_client()
+
+    response = client.post("/api/v1/optimize", json={"route_short_name": "M1"})
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["route_short_name"] == "M1"
+    assert body["direction"] == "North"
+    assert body["engine"] == "fake"
+    assert [row["trip_id"] for row in body["vehicles"]] == ["A", "B", "C"]
+    assert [row["hold_seconds"] for row in body["vehicles"]] == [0, 0, 60]
+    leader, middle, tail = body["vehicles"]
+    assert leader["headway_before_seconds"] is None
+    assert middle["headway_before_seconds"] == 780.0
+    assert (tail["headway_before_seconds"], tail["headway_after_seconds"]) == (60.0, 120.0)
+    assert tail["next_stop_name"] == "Beta"
+    summary = body["summary"]
+    assert summary["vehicle_count"] == 3
+    assert summary["max_hold_seconds"] == 300
+    assert (
+        summary["headway_stddev_after_seconds"] < summary["headway_stddev_before_seconds"]
+    )
+
+
+def test_optimize_unknown_line_is_404() -> None:
+    client = _optimize_app(BUNCHED_LINE).test_client()
+
+    response = client.post("/api/v1/optimize", json={"route_short_name": "M99"})
+
+    assert response.status_code == 404
+    assert "M99" in response.get_json()["error"]
+
+
+def test_optimize_thin_line_is_422_with_reason() -> None:
+    client = _optimize_app(BUNCHED_LINE[:2]).test_client()
+
+    response = client.post("/api/v1/optimize", json={"route_short_name": "M1"})
+
+    assert response.status_code == 422
+    error = response.get_json()["error"]
+    assert "only 2" in error and "at least 3" in error
+
+
+@pytest.mark.parametrize(
+    "body",
+    [{}, {"route_short_name": ""}, {"route_short_name": 42}, "M1"],
+)
+def test_optimize_rejects_malformed_bodies(body: object) -> None:
+    client = _optimize_app(BUNCHED_LINE).test_client()
+
+    response = client.post("/api/v1/optimize", json=body)
+
+    assert response.status_code == 400
+    assert "error" in response.get_json()
+
+
+def test_optimize_rejects_a_non_json_body() -> None:
+    client = _optimize_app(BUNCHED_LINE).test_client()
+
+    response = client.post("/api/v1/optimize", data="M1")
+
+    assert response.status_code == 400
+    assert "error" in response.get_json()
+
+
+def test_optimizer_engine_selected_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CARMA_OPTIMIZER", "heuristic")
+    app = create_app(
+        feed_status_source=lambda: None,
+        position_reader_factory=lambda: nullcontext(StubPositionReader(BUNCHED_LINE)),
+        schedule_repository_factory=lambda: nullcontext(
+            StubScheduleRepository({row.trip_id.value: OPTIMIZE_PATTERN for row in BUNCHED_LINE})
+        ),
+        now_source=lambda: OPTIMIZE_AT,
+    )
+
+    response = app.test_client().post("/api/v1/optimize", json={"route_short_name": "M1"})
+
+    assert response.status_code == 200
+    assert response.get_json()["engine"] == "heuristic"
+
+
+def test_unknown_optimizer_env_fails_fast(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CARMA_OPTIMIZER", "quantum")
+
+    with pytest.raises(ValueError, match="CARMA_OPTIMIZER"):
+        create_app(feed_status_source=lambda: None)

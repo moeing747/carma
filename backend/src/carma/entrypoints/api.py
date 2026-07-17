@@ -4,16 +4,26 @@ import time
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
 
 import psycopg
 from flask import Flask, Response, request
 
+from carma.adapters.optimize_cpsat import CpSatOptimizationEngine
+from carma.adapters.optimize_heuristic import HeuristicOptimizationEngine
 from carma.adapters.postgis_delays import PostgisFeedStatusRepository
 from carma.adapters.postgis_positions import PostgisVehiclePositionReader
 from carma.adapters.postgis_schedule import PostgisTripScheduleRepository
-from carma.application.ports import TripScheduleRepository, VehiclePositionReader
+from carma.application.ports import (
+    OptimizationEngine,
+    TripScheduleRepository,
+    VehiclePositionReader,
+)
 from carma.application.position_stream import advance_cursor
+from carma.application.use_cases import LineOptimization, OptimizeLineHeadways
+from carma.domain.errors import NotEnoughVehiclesError, UnknownLineError
 from carma.domain.feed_health import FRESHNESS_WINDOW, feed_age_seconds, is_feed_fresh
+from carma.domain.headway import MAX_HOLD_SECONDS
 from carma.domain.models import (
     BoundingBox,
     FeedStatus,
@@ -46,6 +56,8 @@ def create_app(
     feed_status_source: FeedStatusSource | None = None,
     position_reader_factory: PositionReaderFactory | None = None,
     schedule_repository_factory: ScheduleRepositoryFactory | None = None,
+    optimization_engine: OptimizationEngine | None = None,
+    now_source: Callable[[], datetime] | None = None,
 ) -> Flask:
     app = Flask("carma")
     source = feed_status_source if feed_status_source is not None else _feed_status_from_env
@@ -57,6 +69,8 @@ def create_app(
         if schedule_repository_factory is not None
         else _schedule_repository_from_env
     )
+    engine = optimization_engine if optimization_engine is not None else _engine_from_env()
+    now = now_source if now_source is not None else _feed_local_now
 
     @app.get("/health")
     def health() -> dict[str, object]:
@@ -120,6 +134,29 @@ def create_app(
             "stops": [_stop_json(stop) for stop in stops],
         }
 
+    @app.post("/api/v1/optimize")
+    def optimize() -> tuple[dict[str, object], int] | dict[str, object]:
+        """Advisory headway re-spacing plan for one line.
+
+        Body: ``{"route_short_name": "M10"}``. Returns per-vehicle hold
+        recommendations and the projected headway spread; nothing is
+        applied anywhere. 404 when the line has no live vehicles, 422 when
+        its busiest direction is too thin to re-space.
+        """
+        body = request.get_json(silent=True)
+        route = body.get("route_short_name") if isinstance(body, dict) else None
+        if not isinstance(route, str) or not route.strip():
+            return {"error": 'body must be JSON like {"route_short_name": "M10"}'}, 400
+        with reader_factory() as reader, schedule_factory() as schedule:
+            use_case = OptimizeLineHeadways(positions=reader, schedule=schedule, engine=engine)
+            try:
+                result = use_case.execute(route.strip(), at=now())
+            except UnknownLineError as error:
+                return {"error": str(error)}, 404
+            except NotEnoughVehiclesError as error:
+                return {"error": str(error)}, 422
+        return _optimization_json(result)
+
     @app.get("/api/v1/positions/stream")
     def positions_stream() -> Response | tuple[dict[str, object], int]:
         """SSE stream of position deltas.
@@ -177,6 +214,43 @@ def _event_stream(
             else:
                 yield ": keep-alive\n\n"
             time.sleep(poll_seconds)
+
+
+def _optimization_json(result: LineOptimization) -> dict[str, object]:
+    summary = result.plan.summary
+    vehicles = [
+        {
+            "trip_id": vehicle.trip_id.value,
+            "delay_seconds": vehicle.delay_seconds,
+            "position_seconds": round(vehicle.position_seconds, 1),
+            "hold_seconds": recommendation.hold_seconds,
+            "next_stop_id": recommendation.next_stop_id,
+            "next_stop_name": recommendation.next_stop_name,
+            "headway_before_seconds": _rounded(recommendation.headway_before_seconds),
+            "headway_after_seconds": _rounded(recommendation.headway_after_seconds),
+        }
+        for vehicle, recommendation in zip(
+            result.vehicles, result.plan.recommendations, strict=True
+        )
+    ]
+    return {
+        "route_short_name": result.route_short_name,
+        "direction": result.direction,
+        "engine": result.engine,
+        "vehicles": vehicles,
+        "summary": {
+            "vehicle_count": summary.vehicle_count,
+            "headway_stddev_before_seconds": round(
+                summary.headway_stddev_before_seconds, 1
+            ),
+            "headway_stddev_after_seconds": round(summary.headway_stddev_after_seconds, 1),
+            "max_hold_seconds": MAX_HOLD_SECONDS,
+        },
+    }
+
+
+def _rounded(value: float | None) -> float | None:
+    return None if value is None else round(value, 1)
 
 
 def _position_json(row: VehiclePosition) -> dict[str, object]:
@@ -276,6 +350,24 @@ def _reader_from_env() -> Iterator[VehiclePositionReader]:
 def _schedule_repository_from_env() -> Iterator[TripScheduleRepository]:
     with psycopg.connect(_require_database_url(), connect_timeout=3) as conn:
         yield PostgisTripScheduleRepository(conn=conn)
+
+
+def _engine_from_env() -> OptimizationEngine:
+    """CARMA_OPTIMIZER selects the engine behind the port; both implement
+    the same contract, which is the point of the shell."""
+    choice = os.environ.get("CARMA_OPTIMIZER", "cpsat")
+    if choice == "cpsat":
+        return CpSatOptimizationEngine()
+    if choice == "heuristic":
+        return HeuristicOptimizationEngine()
+    raise ValueError(f"CARMA_OPTIMIZER must be 'cpsat' or 'heuristic', got {choice!r}")
+
+
+def _feed_local_now() -> datetime:
+    # Naive feed-local wall time, the TripScheduleRepository convention. The
+    # feed's agency timezone lives in the database; the entrypoint uses the
+    # VBB constant (same fallback as the schedule adapter).
+    return datetime.now(tz=ZoneInfo("Europe/Berlin")).replace(tzinfo=None)
 
 
 def _require_database_url() -> str:

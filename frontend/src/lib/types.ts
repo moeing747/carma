@@ -36,3 +36,29 @@ export interface TripSchedule {
   delay_seconds: number | null
   stops: ScheduleStop[]
 }
+
+export interface OptimizeVehicle {
+  trip_id: string
+  delay_seconds: number
+  position_seconds: number
+  hold_seconds: number
+  next_stop_id: string
+  next_stop_name: string
+  headway_before_seconds: number | null
+  headway_after_seconds: number | null
+}
+
+export interface OptimizeSummary {
+  vehicle_count: number
+  headway_stddev_before_seconds: number
+  headway_stddev_after_seconds: number
+  max_hold_seconds: number
+}
+
+export interface OptimizePlan {
+  route_short_name: string
+  direction: string
+  engine: string
+  vehicles: OptimizeVehicle[]
+  summary: OptimizeSummary
+}

@@ -6,10 +6,12 @@ import { Header } from './components/Header'
 import { LegendStats } from './components/LegendStats'
 import { LineFilter, type LineStat } from './components/LineFilter'
 import { MapCanvas, type Bounds } from './components/MapCanvas'
+import { OptimizePanel } from './components/OptimizePanel'
 import { SelectedPanel } from './components/SelectedPanel'
 import { isOnTime, kindOf, type LineKind } from './lib/helpers'
 import { PositionStream } from './lib/stream'
 import { VehicleStore } from './lib/store'
+import type { OptimizePlan } from './lib/types'
 import { useFeedStatus } from './lib/useFeedStatus'
 
 const KIND_ORDER: Record<LineKind, number> = {
@@ -28,7 +30,13 @@ export default function App() {
   const [bounds, setBounds] = useState<Bounds | null>(null)
   const [activeLines, setActiveLines] = useState<ReadonlySet<string>>(new Set())
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [plan, setPlan] = useState<OptimizePlan | null>(null)
   const feed = useFeedStatus()
+
+  // The plan visualizes one line's snapshot; changing the filter drops it.
+  useEffect(() => {
+    setPlan(null)
+  }, [activeLines])
 
   useEffect(() => {
     const stream = new PositionStream('/api/v1/positions/stream', {
@@ -125,6 +133,11 @@ export default function App() {
 
   const handleBounds = useCallback((next: Bounds) => setBounds(next), [])
 
+  const countForLine = useCallback(
+    (line: string) => lines.find((stat) => stat.name === line)?.count ?? 0,
+    [lines],
+  )
+
   const loaded = dataTick > 0
   const total = store.vehicles.size
   const showEmpty = loaded && feed.state === 'fresh' && stats.inView === 0
@@ -135,6 +148,7 @@ export default function App() {
         store={store}
         activeLines={activeLines}
         selectedId={selectedId}
+        plan={plan}
         onSelect={setSelectedId}
         onBoundsChange={handleBounds}
       />
@@ -149,6 +163,12 @@ export default function App() {
         inView={stats.inView}
         total={total}
         worstLine={stats.worstLine}
+      />
+      <OptimizePanel
+        activeLines={activeLines}
+        countForLine={countForLine}
+        plan={plan}
+        onPlan={setPlan}
       />
       {selectedId !== null && (
         <SelectedPanel tripId={selectedId} store={store} onClose={() => setSelectedId(null)} />
