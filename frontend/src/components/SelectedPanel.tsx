@@ -22,17 +22,13 @@ interface SelectedPanelProps {
 export function SelectedPanel({ tripId, store, onClose }: SelectedPanelProps) {
   const [schedule, setSchedule] = useState<TripSchedule | null>(null)
   const [scheduleError, setScheduleError] = useState(false)
-  // Per-frame tick so the technical block (bearing/position) tracks the
-  // interpolated marker live, exactly like the comp specifies.
+  // The technical block tracks the interpolated marker "live", but a
+  // per-frame re-render makes the trailing digits vibrate unreadably;
+  // 2 Hz reads as live without the churn.
   const [, setTick] = useState(0)
   useEffect(() => {
-    let rafId = 0
-    const loop = () => {
-      setTick((value) => value + 1)
-      rafId = requestAnimationFrame(loop)
-    }
-    rafId = requestAnimationFrame(loop)
-    return () => cancelAnimationFrame(rafId)
+    const timer = setInterval(() => setTick((value) => value + 1), 500)
+    return () => clearInterval(timer)
   }, [])
 
   useEffect(() => {
@@ -94,7 +90,7 @@ export function SelectedPanel({ tripId, store, onClose }: SelectedPanelProps) {
           </div>
           <div className="technical-row">
             <span className="key">bearing</span>
-            <span className="value">{vehicle.curBearing.toFixed(1)}°</span>
+            <span className="value">{Math.round(vehicle.curBearing)}°</span>
           </div>
           <div className="technical-row">
             <span className="key">position</span>
@@ -114,9 +110,9 @@ export function SelectedPanel({ tripId, store, onClose }: SelectedPanelProps) {
   )
 }
 
-// Memoized and self-ticking at 1 Hz: the parent re-renders every frame for
-// the technical block, but a minutes-granularity strip has no business
-// recomputing (and re-reading the Berlin wall clock) at 60 fps.
+// Memoized and self-ticking at 1 Hz: the parent re-renders at 2 Hz for the
+// technical block, and a minutes-granularity strip has no business
+// recomputing (and re-reading the Berlin wall clock) even that often.
 const ScheduleStrip = memo(function ScheduleStrip({
   schedule,
   error,
