@@ -31,8 +31,11 @@ export function OptimizePanel({ activeLines, countForLine, plan, onPlan }: Optim
 
   // A resolving optimize call must never deliver a plan for a previous line
   // filter: abort in-flight requests when the gated line changes (and on
-  // unmount).
-  useEffect(() => () => controllerRef.current?.abort(), [gatedLine])
+  // unmount). A stale error message must not survive the change either.
+  useEffect(() => {
+    setError(null)
+    return () => controllerRef.current?.abort()
+  }, [gatedLine])
 
   const run = useCallback(() => {
     if (gate.kind !== 'ready' || running) return
@@ -69,11 +72,14 @@ export function OptimizePanel({ activeLines, countForLine, plan, onPlan }: Optim
       <div className="optimize-head">
         <span className="panel-title">OPTIMIZE</span>
         <span className="advisory-tag">ADVISORY</span>
-        {plan !== null && (
+        {(plan !== null || error !== null) && (
           <button
             className="close-btn"
-            onClick={() => onPlan(null)}
-            aria-label="Dismiss plan"
+            onClick={() => {
+              onPlan(null)
+              setError(null)
+            }}
+            aria-label="Dismiss result"
           >
             ×
           </button>
