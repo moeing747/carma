@@ -38,8 +38,11 @@ describe('VehicleStore interpolation', () => {
     store.tick(6_000)
     const vehicle = store.vehicles.get('T1')!
     expect(vehicle.curLon).toBe(13.4) // still where it was rendered
-    store.tick(8_500) // halfway through the 5s glide window
-    expect(vehicle.curLon).toBeCloseTo(13.45, 5)
+    // The 5s observed gap is stretched 1.25x to a 6.25s glide window, so
+    // 2.5s in is 40% of the way — deliberate overshoot so on-time updates
+    // re-aim mid-glide instead of the fleet freezing in unison.
+    store.tick(8_500)
+    expect(vehicle.curLon).toBeCloseTo(13.44, 5)
     store.tick(60_000_000) // far past the window: clamped at the target
     expect(store.vehicles.get('T1')?.curLon ?? 13.5).toBeCloseTo(13.5, 5)
   })
@@ -48,10 +51,10 @@ describe('VehicleStore interpolation', () => {
     const store = new VehicleStore()
     store.update([row()], 1_000)
     store.update([row({ lon: 13.5 })], 6_000)
-    store.tick(8_500) // mid-glide at ~13.45
+    store.tick(8_500) // mid-glide at ~13.44 (40% of the stretched window)
     store.update([row({ lon: 13.6 })], 8_500)
     const vehicle = store.vehicles.get('T1')!
-    expect(vehicle.fromLon).toBeCloseTo(13.45, 5) // no jump back, no snap forward
+    expect(vehicle.fromLon).toBeCloseTo(13.44, 5) // no jump back, no snap forward
     expect(vehicle.toLon).toBe(13.6)
   })
 
