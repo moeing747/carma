@@ -43,10 +43,16 @@ export interface Vehicle {
 
 const FADE_START_MS = 25_000
 const REMOVE_MS = 45_000
-/** Glide duration bounds; the observed inter-update gap is used when sane. */
+/** Glide duration bounds; the observed inter-update gap is used when sane.
+ * The stretch deliberately overshoots the expected gap: aiming to arrive
+ * exactly when the next update is due makes the whole fleet land and freeze
+ * in unison whenever an update runs late. Overshooting keeps markers
+ * mid-glide when the re-aim arrives (a seamless bend), trading ~1s of
+ * display latency for uninterrupted motion. */
 const MIN_GLIDE_MS = 1_000
-const MAX_GLIDE_MS = 8_000
-const DEFAULT_GLIDE_MS = 5_000
+const MAX_GLIDE_MS = 10_000
+const DEFAULT_GLIDE_MS = 6_000
+const GLIDE_STRETCH = 1.25
 
 export class VehicleStore {
   readonly vehicles = new Map<string, Vehicle>()
@@ -92,7 +98,7 @@ export class VehicleStore {
         this.bumpMembership()
         continue
       }
-      const glideMs = clampGlide(receivedAtMs - existing.lastSeenMs)
+      const glideMs = clampGlide((receivedAtMs - existing.lastSeenMs) * GLIDE_STRETCH)
       existing.fromLon = existing.curLon
       existing.fromLat = existing.curLat
       existing.fromBearing = existing.curBearing
