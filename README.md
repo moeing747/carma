@@ -88,6 +88,8 @@ Both are held to the same contract by shared property tests (holds within bounds
 
 Compose (the quickstart above) is the primary path. [`infra/k8s`](infra/k8s/) is the second: a Kustomize base mirroring the compose topology — same image, four workloads, a migration Job, probes, and deliberately demo-grade single-replica PostGIS/Kafka; `infra/k8s/README.md` has the kind quickstart. [`infra/terraform`](infra/terraform/) is a stub showing the IaC layer's shape: one real module (versioned S3 bucket for static GTFS snapshots), `fmt`/`validate`-gated in CI, nothing applied.
 
+**Connections.** The API runs without a connection pool on purpose: every request opens a short-lived PostgreSQL connection (and each SSE client holds one autocommit connection for its stream's lifetime), which is honest at demo traffic but is the first thing a production deployment would replace with a psycopg pool or pgbouncer.
+
 **Logs.** Every service writes single-line `event=… key=value` records to stdout: the poller's `event=feed_polled`, the consumer's `event=trip_updates_consumed`, the projector's `event=positions_recomputed`, and the API's per-request `event=request method=… path=… status=… elapsed_ms=…`. Grep an event name to follow one stage of the pipeline, or grep `_failed` across services to see everything going wrong and nothing else. Start/stop markers (`event=poller_started`, `event=consumer_stopped`, …) bracket every worker's lifetime, so restarts are visible in the same stream.
 
 ## Commit conventions

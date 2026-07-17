@@ -5,6 +5,7 @@ from datetime import datetime
 import pytest
 
 from carma.application.ports import OptimizationRequest
+from carma.application.position_stream import PositionCursor
 from carma.application.use_cases import OptimizeLineHeadways
 from carma.domain.errors import NotEnoughVehiclesError, UnknownLineError
 from carma.domain.headway import HeadwayPlan, build_plan
@@ -40,7 +41,7 @@ class StubReader:
         return self.rows[:limit]
 
     def positions_since(
-        self, cursor: datetime | None, limit: int
+        self, cursor: PositionCursor | None, limit: int
     ) -> tuple[VehiclePosition, ...]:
         return self.rows[:limit]
 

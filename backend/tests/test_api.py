@@ -6,6 +6,7 @@ import pytest
 from flask import Flask
 
 from carma.application.ports import OptimizationRequest
+from carma.application.position_stream import PositionCursor
 from carma.domain.headway import HeadwayPlan, build_plan
 from carma.domain.models import (
     BoundingBox,
@@ -95,6 +96,7 @@ def test_meta_describes_the_feed() -> None:
 
 
 COMPUTED_AT = datetime(2026, 7, 16, 12, 0, tzinfo=UTC)
+CURSOR_T1 = f"{COMPUTED_AT.isoformat()}|T1"
 
 
 def _position(trip_id: str = "T1") -> VehiclePosition:
@@ -117,19 +119,24 @@ class StubPositionReader:
     def __init__(self, rows: tuple[VehiclePosition, ...]) -> None:
         self.rows = rows
         self.calls: list[tuple[BoundingBox | None, int]] = []
-        self.since_calls: list[tuple[datetime | None, int]] = []
+        self.since_calls: list[tuple[PositionCursor | None, int]] = []
 
     def positions(self, bbox: BoundingBox | None, limit: int) -> tuple[VehiclePosition, ...]:
         self.calls.append((bbox, limit))
         return self.rows[:limit]
 
     def positions_since(
-        self, cursor: datetime | None, limit: int
+        self, cursor: PositionCursor | None, limit: int
     ) -> tuple[VehiclePosition, ...]:
         self.since_calls.append((cursor, limit))
-        if cursor is not None and cursor >= COMPUTED_AT:
-            return ()
-        return self.rows[:limit]
+        ordered = sorted(self.rows, key=lambda row: (row.computed_at, row.trip_id.value))
+        if cursor is not None:
+            ordered = [
+                row
+                for row in ordered
+                if (row.computed_at, row.trip_id.value) > (cursor.computed_at, cursor.trip_id)
+            ]
+        return tuple(ordered[:limit])
 
     def position_for_trip(self, trip_id: TripId) -> VehiclePosition | None:
         for row in self.rows:
@@ -182,6 +189,9 @@ def test_positions_parses_bbox_and_caps_limit() -> None:
         "bbox=a,b,c,d",  # not numbers
         "bbox=13.6,52.4,13.2,52.6",  # min > max
         "bbox=13.2,52.4,13.6,95.0",  # latitude out of range
+        "bbox=nan,52.4,13.6,52.6",  # float() accepts "nan"
+        "bbox=13.2,52.4,inf,52.6",  # float() accepts "inf"
+        "bbox=13.2,-inf,13.6,52.6",
         "limit=0",
         "limit=abc",
     ],
@@ -208,9 +218,9 @@ def test_positions_stream_emits_snapshot_then_delta(
     chunks = response.response  # the generator, pulled lazily
     first = next(iter(chunks))
     text = first if isinstance(first, str) else first.decode()
-    assert text.startswith(f"id: {COMPUTED_AT.isoformat()}\nevent: positions\n")
+    assert text.startswith(f"id: {CURSOR_T1}\nevent: positions\n")
     payload = json.loads(text.split("data: ", 1)[1])
-    assert payload["cursor"] == COMPUTED_AT.isoformat()
+    assert payload["cursor"] == CURSOR_T1
     assert payload["positions"][0]["trip_id"] == "T1"
     response.close()
     # The delta query used the advanced cursor, so nothing is re-sent.
@@ -222,14 +232,49 @@ def test_positions_stream_resumes_from_cursor(monkeypatch: pytest.MonkeyPatch) -
     reader = StubPositionReader((_position(),))
     client = _positions_app(reader).test_client()
 
+    response = client.get("/api/v1/positions/stream", headers={"Last-Event-ID": CURSOR_T1})
+    first = next(iter(response.response))
+    text = first if isinstance(first, str) else first.decode()
+    assert text.startswith(":")  # nothing newer: keep-alive comment
+    response.close()
+    assert reader.since_calls[0] == (PositionCursor(COMPUTED_AT, "T1"), 20_000)
+
+
+def test_positions_stream_resumes_within_one_timestamp(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keyset regression: rows sharing the cursor's computed_at but with a
+    later trip_id (a tick split by the read limit) must still be delivered."""
+    monkeypatch.setenv("CARMA_SSE_POLL_SECONDS", "0.01")
+    reader = StubPositionReader((_position("T1"), _position("T2")))
+    client = _positions_app(reader).test_client()
+
+    response = client.get("/api/v1/positions/stream", headers={"Last-Event-ID": CURSOR_T1})
+    first = next(iter(response.response))
+    text = first if isinstance(first, str) else first.decode()
+    payload = json.loads(text.split("data: ", 1)[1])
+    assert [row["trip_id"] for row in payload["positions"]] == ["T2"]
+    assert payload["cursor"] == f"{COMPUTED_AT.isoformat()}|T2"
+    response.close()
+
+
+def test_positions_stream_accepts_a_bare_timestamp_cursor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The pre-keyset token shape still resumes (replaying that timestamp)."""
+    monkeypatch.setenv("CARMA_SSE_POLL_SECONDS", "0.01")
+    reader = StubPositionReader((_position(),))
+    client = _positions_app(reader).test_client()
+
     response = client.get(
         "/api/v1/positions/stream", headers={"Last-Event-ID": COMPUTED_AT.isoformat()}
     )
     first = next(iter(response.response))
     text = first if isinstance(first, str) else first.decode()
-    assert text.startswith(":")  # nothing newer: keep-alive comment
+    payload = json.loads(text.split("data: ", 1)[1])
+    assert [row["trip_id"] for row in payload["positions"]] == ["T1"]
     response.close()
-    assert reader.since_calls[0] == (COMPUTED_AT, 20_000)
+    assert reader.since_calls[0] == (PositionCursor(COMPUTED_AT, ""), 20_000)
 
 
 def test_positions_stream_rejects_malformed_cursor() -> None:
@@ -316,6 +361,41 @@ def test_trip_schedule_unknown_trip_is_404() -> None:
     client = _schedule_app(StubPositionReader(())).test_client()
 
     response = client.get("/api/v1/trips/NOPE/schedule")
+
+    assert response.status_code == 404
+    assert "error" in response.get_json()
+
+
+class BrokenScheduleRepository:
+    """Raises like postgis_schedule does on malformed data (no coordinates)."""
+
+    def active_trip_ids(self, at: datetime) -> frozenset[TripId]:
+        return frozenset()
+
+    def schedule_for_trip(self, trip_id: TripId) -> tuple[ScheduledStop, ...]:
+        raise ValueError("stop S1 on trip T1 has no coordinates")
+
+    def shape_for_trip(self, trip_id: TripId) -> tuple[Coordinate, ...] | None:
+        return None
+
+
+def test_unhandled_errors_come_back_as_json_500() -> None:
+    app = create_app(
+        feed_status_source=lambda: None,
+        position_reader_factory=lambda: nullcontext(StubPositionReader(())),
+        schedule_repository_factory=lambda: nullcontext(BrokenScheduleRepository()),
+    )
+
+    response = app.test_client().get("/api/v1/trips/T1/schedule")
+
+    assert response.status_code == 500
+    assert response.get_json() == {"error": "internal server error"}
+
+
+def test_unknown_routes_come_back_as_json_404() -> None:
+    client = create_app(feed_status_source=lambda: None).test_client()
+
+    response = client.get("/api/v1/nope")
 
     assert response.status_code == 404
     assert "error" in response.get_json()

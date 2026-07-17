@@ -139,3 +139,20 @@ def test_pattern_position_without_timed_stops_is_none() -> None:
     untimed = (_stop(1, None, None),)
     assert pattern_position(untimed, delay_seconds=0, seconds_of_day=29700) is None
     assert pattern_position((), delay_seconds=0, seconds_of_day=29700) is None
+
+
+def test_pattern_position_treats_midnight_zero_as_a_real_time() -> None:
+    """Regression for the `x or y or 0` falsy trap: a stop whose arrival is
+    0 (GTFS 00:00:00) was skipped in favor of its departure, mislabeling an
+    already-reached stop as the next one."""
+    midnight = (
+        _stop(1, None, 0),  # departs exactly at midnight
+        _stop(2, 0, 120),  # arrival 0 already reached, departs 00:02
+        _stop(3, 300, None),
+    )
+    located = pattern_position(midnight, delay_seconds=0, seconds_of_day=60)
+    assert located is not None
+    position, next_stop = located
+    assert position == 60.0
+    # arrival 0 <= effective 60: S2 is reached; the next stop is S3.
+    assert next_stop.stop_id == "S3"

@@ -35,6 +35,7 @@ from carma.adapters.postgis_positions import (
     PostgisVehiclePositionReader,
 )
 from carma.adapters.postgis_schedule import PostgisTripScheduleRepository
+from carma.application.position_stream import PositionCursor
 from carma.domain.models import BoundingBox, StopTimeEvent, TripDelay, TripId
 from carma.domain.positioning import derive_position
 from carma.entrypoints.api import create_app
@@ -438,13 +439,16 @@ def test_reader_positions_since_respects_the_cursor(
 
     everything = reader.positions_since(None, 100)
     assert [row.trip_id for row in everything] == [TripId("T1")]
-    cursor = everything[-1].computed_at
+    newest = everything[-1]
+    cursor = PositionCursor(computed_at=newest.computed_at, trip_id=newest.trip_id.value)
     assert reader.positions_since(cursor, 100) == ()
+    # Keyset: an earlier trip id at the same timestamp still sees the row.
+    assert reader.positions_since(PositionCursor(newest.computed_at, ""), 100) == everything
 
     engine.recompute({TripId("T1")}, _at(8, 16))
     newer = reader.positions_since(cursor, 100)
     assert [row.trip_id for row in newer] == [TripId("T1")]
-    assert newer[0].computed_at > cursor
+    assert newer[0].computed_at > cursor.computed_at
 
     inside = reader.positions(
         BoundingBox(min_lon=13.3, min_lat=52.4, max_lon=13.5, max_lat=52.6), 100

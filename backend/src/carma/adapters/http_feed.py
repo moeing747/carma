@@ -37,3 +37,11 @@ class HttpFeedSource:
             if exc.code == 304:
                 return None
             raise
+
+    def forget_etag(self) -> None:
+        """Drop the conditional-request state so the next fetch re-downloads.
+
+        The poller calls this when a cycle fails after the fetch: the ETag
+        has already advanced, so a plain retry would get a 304 and the
+        snapshot that was never published would be lost."""
+        self._etag = None

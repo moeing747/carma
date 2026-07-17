@@ -112,8 +112,9 @@ def poll_feed() -> None:
 
     ensure_topic(brokers)
     publisher = KafkaTripUpdatePublisher(brokers)
+    source = HttpFeedSource(feed_url)
     ingest = IngestFeedSnapshot(
-        source=HttpFeedSource(feed_url),
+        source=source,
         decode=decode_trip_updates,
         publisher=publisher,
     )
@@ -142,6 +143,11 @@ def poll_feed() -> None:
                     )
             except Exception:
                 failures += 1
+                # The fetch may have advanced the source's ETag before the
+                # cycle failed (decode, publish, flush); dropping it forces a
+                # full re-download next round, so retries cannot 304 away the
+                # snapshot that was never published.
+                source.forget_etag()
                 _log.exception("event=feed_poll_failed consecutive_failures=%d", failures)
                 if args.once:
                     raise SystemExit(1) from None
@@ -208,12 +214,10 @@ def project_positions() -> None:
             engine=PostgisPositionEngine(conn=conn),
         )
         _log.info("event=projector_started interval_seconds=%s", interval)
-        failures = 0
         while not stop.is_set():
             started = time.monotonic()
             try:
                 report = recompute.execute(datetime.now(tz=UTC))
-                failures = 0
                 _log.info(
                     "event=positions_recomputed active=%d written=%d elapsed_ms=%d",
                     report.active_trips,
@@ -221,13 +225,13 @@ def project_positions() -> None:
                     int((time.monotonic() - started) * 1000),
                 )
             except Exception:
-                failures += 1
-                _log.exception(
-                    "event=positions_recompute_failed consecutive_failures=%d", failures
-                )
-                if args.once:
-                    raise SystemExit(1) from None
+                # The lifetime connection never recovers from a broken socket
+                # (psycopg does not reconnect), so retrying in-process wedges
+                # forever; exiting non-zero lets the supervisor restart us
+                # with a fresh connection — the consumer's pattern.
+                _log.exception("event=positions_recompute_failed")
+                raise SystemExit(1) from None
             if args.once:
                 break
-            stop.wait(schedule.next_delay(time.monotonic() - started, failures))
+            stop.wait(schedule.next_delay(time.monotonic() - started, 0))
     _log.info("event=projector_stopped")

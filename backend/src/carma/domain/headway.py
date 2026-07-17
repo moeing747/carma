@@ -163,8 +163,8 @@ def pattern_position(
         return None
     first = timed[0]
     last = timed[-1]
-    start = first.departure_seconds or first.arrival_seconds or 0
-    end = last.arrival_seconds or last.departure_seconds or start
+    start = _preferred_seconds(first.departure_seconds, first.arrival_seconds)
+    end = _preferred_seconds(last.arrival_seconds, last.departure_seconds)
     now = min(
         (seconds_of_day, seconds_of_day + 86400),
         key=lambda candidate: max(start - candidate, candidate - end, 0),
@@ -175,8 +175,20 @@ def pattern_position(
         (
             stop
             for stop in timed
-            if (stop.arrival_seconds or stop.departure_seconds or 0) > effective
+            if _preferred_seconds(stop.arrival_seconds, stop.departure_seconds) > effective
         ),
         last,
     )
     return position, next_stop
+
+
+def _preferred_seconds(primary: int | None, fallback: int | None) -> int:
+    """First non-None of the two stop times; callers guarantee one is set.
+
+    Explicit None checks: ``primary or fallback`` would treat a legitimate
+    0 (midnight, GTFS 00:00:00) as missing and fall through."""
+    if primary is not None:
+        return primary
+    if fallback is not None:
+        return fallback
+    raise ValueError("stop carries no time")

@@ -1,5 +1,6 @@
 import json
 import logging
+import math
 import os
 import time
 from collections.abc import Callable, Iterator
@@ -9,6 +10,7 @@ from zoneinfo import ZoneInfo
 
 import psycopg
 from flask import Flask, Response, g, request
+from werkzeug.exceptions import HTTPException
 
 from carma.adapters.optimize_cpsat import CpSatOptimizationEngine
 from carma.adapters.optimize_heuristic import HeuristicOptimizationEngine
@@ -20,7 +22,7 @@ from carma.application.ports import (
     TripScheduleRepository,
     VehiclePositionReader,
 )
-from carma.application.position_stream import advance_cursor
+from carma.application.position_stream import PositionCursor, advance_cursor
 from carma.application.use_cases import LineOptimization, OptimizeLineHeadways
 from carma.domain.errors import NotEnoughVehiclesError, UnknownLineError
 from carma.domain.feed_health import FRESHNESS_WINDOW, feed_age_seconds, is_feed_fresh
@@ -101,6 +103,15 @@ def create_app(
             elapsed_ms,
         )
         return response
+
+    @app.errorhandler(Exception)
+    def _json_error(error: Exception) -> tuple[dict[str, object], int]:
+        # Errors must come back as JSON: the dashboard parses every body, and
+        # Flask's default HTML error page would surface as a SyntaxError.
+        if isinstance(error, HTTPException):
+            return {"error": error.description or error.name}, error.code or 500
+        _log.exception("event=request_failed path=%s", request.path)
+        return {"error": "internal server error"}, 500
 
     @app.get("/health")
     def health() -> dict[str, object]:
@@ -207,9 +218,9 @@ def create_app(
         """
         raw_cursor = request.args.get("cursor") or request.headers.get("Last-Event-ID")
         try:
-            cursor = datetime.fromisoformat(raw_cursor) if raw_cursor else None
+            cursor = _parse_cursor(raw_cursor)
         except ValueError:
-            return {"error": "cursor must be an ISO-8601 timestamp"}, 400
+            return {"error": "cursor must be an ISO-8601 timestamp, optionally |trip_id"}, 400
         poll_seconds = float(os.environ.get("CARMA_SSE_POLL_SECONDS", "3"))
         return Response(
             _event_stream(reader_factory, cursor, poll_seconds),
@@ -220,9 +231,19 @@ def create_app(
     return app
 
 
+def _parse_cursor(raw: str | None) -> PositionCursor | None:
+    """Keyset cursor from ``<ISO-8601>|<trip_id>``; a bare timestamp (the
+    pre-keyset token shape) reads as an empty trip id, which merely replays
+    that timestamp's rows — the client store is a latest-wins upsert."""
+    if not raw:
+        return None
+    timestamp, _, trip_id = raw.partition("|")
+    return PositionCursor(computed_at=datetime.fromisoformat(timestamp), trip_id=trip_id)
+
+
 def _event_stream(
     reader_factory: PositionReaderFactory,
-    cursor: datetime | None,
+    cursor: PositionCursor | None,
     poll_seconds: float,
 ) -> Iterator[str]:
     # The first poll runs before any sleep, so a new client gets the current
@@ -233,7 +254,7 @@ def _event_stream(
             newest = advance_cursor(cursor, rows)
             if rows and newest is not None:
                 cursor = newest
-                token = newest.isoformat()
+                token = f"{newest.computed_at.isoformat()}|{newest.trip_id}"
                 payload = json.dumps(
                     {
                         "positions": [_position_json(row) for row in rows],
@@ -326,6 +347,10 @@ def _parse_bbox(raw: str | None) -> BoundingBox | None:
         min_lon, min_lat, max_lon, max_lat = (float(part) for part in parts)
     except ValueError:
         raise ValueError("bbox coordinates must be numbers") from None
+    # float() accepts "nan"/"inf", which would select nothing while looking
+    # like a valid request; BoundingBox then enforces range and ordering.
+    if not all(math.isfinite(value) for value in (min_lon, min_lat, max_lon, max_lat)):
+        raise ValueError("bbox coordinates must be finite")
     return BoundingBox(min_lon=min_lon, min_lat=min_lat, max_lon=max_lon, max_lat=max_lat)
 
 
@@ -368,19 +393,23 @@ def _feed_status_from_env() -> FeedStatus | None:
     # A short-lived connection per call: /health is probed every ~10s and a
     # hung pooled connection must not wedge liveness. connect_timeout bounds
     # the worst case well under the probe timeout.
-    with psycopg.connect(_require_database_url(), connect_timeout=3) as conn:
+    with psycopg.connect(_require_database_url(), connect_timeout=3, autocommit=True) as conn:
         return PostgisFeedStatusRepository(conn=conn).latest()
 
 
 @contextmanager
 def _reader_from_env() -> Iterator[VehiclePositionReader]:
-    with psycopg.connect(_require_database_url(), connect_timeout=3) as conn:
+    # autocommit: these connections only read, and an SSE client keeps its
+    # reader for the stream's whole lifetime — without autocommit the first
+    # SELECT would pin an idle-in-transaction session (never committed) that
+    # holds locks against DDL and trips idle_in_transaction timeouts.
+    with psycopg.connect(_require_database_url(), connect_timeout=3, autocommit=True) as conn:
         yield PostgisVehiclePositionReader(conn=conn)
 
 
 @contextmanager
 def _schedule_repository_from_env() -> Iterator[TripScheduleRepository]:
-    with psycopg.connect(_require_database_url(), connect_timeout=3) as conn:
+    with psycopg.connect(_require_database_url(), connect_timeout=3, autocommit=True) as conn:
         yield PostgisTripScheduleRepository(conn=conn)
 
 

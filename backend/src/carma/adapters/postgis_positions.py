@@ -28,6 +28,7 @@ from typing import Any
 import psycopg
 
 from carma.adapters.postgis_schedule import to_feed_local
+from carma.application.position_stream import PositionCursor
 from carma.domain.models import BoundingBox, TripId, VehiclePosition
 from carma.domain.service_days import service_day_candidates
 
@@ -299,7 +300,7 @@ class PostgisVehiclePositionReader:
         return tuple(_position_from_row(row) for row in rows)
 
     def positions_since(
-        self, cursor: datetime | None, limit: int
+        self, cursor: PositionCursor | None, limit: int
     ) -> tuple[VehiclePosition, ...]:
         if cursor is None:
             rows = self.conn.execute(
@@ -307,11 +308,14 @@ class PostgisVehiclePositionReader:
                 {"limit": limit},
             ).fetchall()
         else:
+            # Keyset on (computed_at, trip_id): a tick whose rows all share
+            # one timestamp and exceed the limit resumes mid-timestamp on the
+            # next poll instead of skipping the remainder forever.
             rows = self.conn.execute(
                 _POSITION_COLUMNS
-                + " WHERE vp.computed_at > %(cursor)s"
+                + " WHERE (vp.computed_at, vp.trip_id) > (%(cursor_at)s, %(cursor_trip)s)"
                 " ORDER BY vp.computed_at, vp.trip_id LIMIT %(limit)s",
-                {"cursor": cursor, "limit": limit},
+                {"cursor_at": cursor.computed_at, "cursor_trip": cursor.trip_id, "limit": limit},
             ).fetchall()
         return tuple(_position_from_row(row) for row in rows)
 

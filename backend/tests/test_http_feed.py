@@ -57,3 +57,15 @@ def test_unchanged_feed_returns_none_via_etag(feed_url: str) -> None:
 def test_sources_do_not_share_etag_state(feed_url: str) -> None:
     assert HttpFeedSource(feed_url).fetch() == BODY_V1
     assert HttpFeedSource(feed_url).fetch() == BODY_V1
+
+
+def test_forget_etag_forces_a_full_refetch(feed_url: str) -> None:
+    """Regression: after a failed publish cycle the poller drops the ETag so
+    the unpublished snapshot is re-downloaded instead of 304ing away."""
+    source = HttpFeedSource(feed_url)
+
+    assert source.fetch() == BODY_V1
+    source.forget_etag()
+    assert source.fetch() == BODY_V1
+    # State rebuilt by the refetch: the next conditional request 304s again.
+    assert source.fetch() is None

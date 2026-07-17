@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
+from carma.application.position_stream import PositionCursor
 from carma.domain.headway import MAX_HOLD_SECONDS, HeadwayPlan, LineVehicle
 from carma.domain.models import (
     BoundingBox,
@@ -83,9 +84,12 @@ class VehiclePositionReader(Protocol):
         """Current positions, optionally restricted to a bounding box."""
         ...
 
-    def positions_since(self, cursor: datetime | None, limit: int) -> tuple[VehiclePosition, ...]:
-        """Positions computed strictly after ``cursor`` (all when None),
-        ordered by computed_at so callers can advance a delta cursor."""
+    def positions_since(
+        self, cursor: PositionCursor | None, limit: int
+    ) -> tuple[VehiclePosition, ...]:
+        """Positions strictly after ``cursor`` (all when None) in keyset
+        order (computed_at, trip_id), so callers can advance a delta cursor
+        even when rows sharing one timestamp exceed ``limit``."""
         ...
 
     def position_for_trip(self, trip_id: TripId) -> VehiclePosition | None:
