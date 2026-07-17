@@ -1,0 +1,118 @@
+# Demo-grade single-node Kafka (KRaft combined controller+broker), one PVC,
+# replication factor 1 everywhere. A real deployment would use the Strimzi
+# operator or a managed Kafka; none of that is modeled here. Unlike compose,
+# only one in-cluster listener is needed (no host access), advertised via the
+# Service name.
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka
+spec:
+  clusterIP: None
+  # The broker advertises this Service's DNS name; without this flag the name
+  # only resolves once the pod is ready, and the readiness probe itself needs
+  # to reach the advertised listener — a bootstrap deadlock.
+  publishNotReadyAddresses: true
+  selector:
+    app.kubernetes.io/name: kafka
+  ports:
+    - name: kafka
+      port: 9092
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: kafka
+spec:
+  serviceName: kafka
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kafka
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kafka
+    spec:
+      securityContext:
+        # apache/kafka runs as appuser (uid 1000); fsGroup makes the PVC
+        # writable for it.
+        fsGroup: 1000
+      containers:
+        - name: kafka
+          image: apache/kafka:3.8.0
+          ports:
+            - name: kafka
+              containerPort: 9092
+          env:
+            - name: KAFKA_NODE_ID
+              value: '1'
+            - name: KAFKA_PROCESS_ROLES
+              value: broker,controller
+            - name: KAFKA_CONTROLLER_QUORUM_VOTERS
+              value: 1@localhost:9093
+            - name: KAFKA_LISTENERS
+              value: PLAINTEXT://:9092,CONTROLLER://:9093
+            - name: KAFKA_ADVERTISED_LISTENERS
+              value: PLAINTEXT://kafka:9092
+            - name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP
+              value: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+            - name: KAFKA_CONTROLLER_LISTENER_NAMES
+              value: CONTROLLER
+            - name: KAFKA_INTER_BROKER_LISTENER_NAME
+              value: PLAINTEXT
+            - name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR
+              value: '1'
+            - name: KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR
+              value: '1'
+            - name: KAFKA_TRANSACTION_STATE_LOG_MIN_ISR
+              value: '1'
+            - name: KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS
+              value: '0'
+            - name: KAFKA_AUTO_CREATE_TOPICS_ENABLE
+              value: 'true'
+            - name: KAFKA_LOG_DIRS
+              value: /var/lib/kafka/data
+            # Half the image's 1G default heap; keeps the pod inside the
+            # modest limits below.
+            - name: KAFKA_HEAP_OPTS
+              value: -Xmx512M -Xms512M
+          # Readiness mirrors the compose healthcheck (a topic-list round
+          # trip), with a generous timeout: the probe spawns a JVM and takes
+          # >10s on a CPU-starved node. Liveness is a plain TCP check —
+          # compose never kills on healthcheck, and restarting a healthy
+          # broker because a CLI probe ran slowly would be strictly worse.
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list
+            initialDelaySeconds: 20
+            periodSeconds: 15
+            timeoutSeconds: 30
+          livenessProbe:
+            tcpSocket:
+              port: kafka
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 250m
+              memory: 768Mi
+            limits:
+              cpu: '1'
+              memory: 1Gi
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/kafka/data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: 2Gi

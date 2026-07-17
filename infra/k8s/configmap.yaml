@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: carma-config
+data:
+  KAFKA_BROKERS: kafka:9092
+  CARMA_FEED_URL: https://production.gtfsrt.vbb.de/data
+  CARMA_POLL_INTERVAL_SECONDS: '30'
+  CARMA_PROJECTION_INTERVAL_SECONDS: '5'
+  # Which OptimizationEngine implementation serves /api/v1/optimize
+  # ('cpsat' or 'heuristic').
+  CARMA_OPTIMIZER: cpsat

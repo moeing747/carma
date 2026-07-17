@@ -1,0 +1,45 @@
+# Feed poller. Like compose, the workers expose no health endpoint, so there
+# are no probes to fake: a worker that cannot reach Kafka/PostGIS exits
+# non-zero and the Deployment's restart (with backoff) replaces both the
+# compose `restart: unless-stopped` policy and its depends_on ordering.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: poller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: poller
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: poller
+    spec:
+      containers:
+        - name: poller
+          image: carma-backend
+          command: [carma-poll-feed]
+          env:
+            - name: KAFKA_BROKERS
+              valueFrom:
+                configMapKeyRef:
+                  name: carma-config
+                  key: KAFKA_BROKERS
+            - name: CARMA_FEED_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: carma-config
+                  key: CARMA_FEED_URL
+            - name: CARMA_POLL_INTERVAL_SECONDS
+              valueFrom:
+                configMapKeyRef:
+                  name: carma-config
+                  key: CARMA_POLL_INTERVAL_SECONDS
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi

@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import time
 from collections.abc import Callable, Iterator
@@ -7,7 +8,7 @@ from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
 import psycopg
-from flask import Flask, Response, request
+from flask import Flask, Response, g, request
 
 from carma.adapters.optimize_cpsat import CpSatOptimizationEngine
 from carma.adapters.optimize_heuristic import HeuristicOptimizationEngine
@@ -31,6 +32,9 @@ from carma.domain.models import (
     TripId,
     VehiclePosition,
 )
+from carma.entrypoints.logs import configure_logging
+
+_log = logging.getLogger("carma")
 
 FEED_META = {
     "provider": "VBB (Verkehrsverbund Berlin-Brandenburg)",
@@ -60,6 +64,7 @@ def create_app(
     now_source: Callable[[], datetime] | None = None,
     utc_now_source: Callable[[], datetime] | None = None,
 ) -> Flask:
+    configure_logging()
     app = Flask("carma")
     source = feed_status_source if feed_status_source is not None else _feed_status_from_env
     reader_factory = (
@@ -76,6 +81,26 @@ def create_app(
     # now_source, which is naive feed-local time for schedule queries);
     # injectable so tests can move past the freshness window without waiting.
     utc_now = utc_now_source if utc_now_source is not None else _utc_now
+
+    @app.before_request
+    def _start_request_timer() -> None:
+        g.request_started = time.monotonic()
+
+    @app.after_request
+    def _log_request(response: Response) -> Response:
+        # For the SSE stream this fires when the response is handed to the
+        # server, not when the client disconnects, so elapsed_ms is setup
+        # time; that is the honest number for a long-lived stream anyway.
+        started = getattr(g, "request_started", None)
+        elapsed_ms = 0 if started is None else int((time.monotonic() - started) * 1000)
+        _log.info(
+            "event=request method=%s path=%s status=%d elapsed_ms=%d",
+            request.method,
+            request.path,
+            response.status_code,
+            elapsed_ms,
+        )
+        return response
 
     @app.get("/health")
     def health() -> dict[str, object]:

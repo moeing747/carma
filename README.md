@@ -4,7 +4,7 @@
 
 Real-time Berlin transit monitoring and network-planning demo. Carma ingests the open VBB GTFS-RT feed (TripUpdates for ~6,600 trips), pushes it through a Kafka pipeline into a typed Python core, and renders live vehicles on a WebGL map. The feed publishes **no GPS**: vehicle positions are **derived** by combining the static schedule with live delays and projecting trip progress onto route geometry in PostGIS — which makes positions continuous by construction and smooth animation free. A deliberately naive optimization engine sits behind the same port a real Operations-Research engine would use; the engineering shell around it is the point, not the algorithm.
 
-> **Status: under construction.** The hexagonal core, decoder, realtime ingest pipeline (poller → Kafka → PostGIS), position derivation engine (`/api/v1/positions` + SSE stream), the live dashboard, and the optimization shell (`POST /api/v1/optimize` + map overlay) are in place; ops polish (K8s manifests, Terraform stub, structured logging) is landing next.
+> **Status: complete.** All planned phases have landed: the hexagonal core and decoder, the realtime ingest pipeline (poller → Kafka → PostGIS), the position derivation engine (`/api/v1/positions` + SSE stream), the live dashboard, the optimization shell (`POST /api/v1/optimize` + map overlay), and the ops layer (Kubernetes manifests, Terraform stub, structured logging).
 
 ## Quickstart
 
@@ -35,6 +35,18 @@ npm run dev     # open http://localhost:5173
 ```
 
 ## Architecture
+
+```mermaid
+flowchart LR
+    feed[VBB GTFS-RT feed] -->|poll ~30s| poller[poller]
+    poller -->|TripDelay events| kafka[(Kafka)]
+    kafka --> consumer[consumer]
+    consumer -->|latest delay per trip| postgis[(PostGIS)]
+    projector[projector] -->|derived positions ~5s| postgis
+    postgis --> api[Flask API]
+    api -->|REST + SSE deltas| dashboard[React dashboard]
+    engine[cpsat / heuristic] -.->|OptimizationEngine port| api
+```
 
 Hexagonal (ports and adapters), with the boundaries **enforced by tooling**, not convention:
 
@@ -71,6 +83,12 @@ Two interchangeable engines prove the port honest, selected via `CARMA_OPTIMIZER
 - `heuristic` — a solver-free greedy pass placing each follower one mean headway behind the vehicle ahead (`adapters/optimize_heuristic.py`).
 
 Both are held to the same contract by shared property tests (holds within bounds, order preserved, spread never worse than doing nothing), and the pure headway math lives in `domain/headway.py`. Swapping in a real engine means implementing one `solve()` method.
+
+## Deployment & operations
+
+Compose (the quickstart above) is the primary path. [`infra/k8s`](infra/k8s/) is the second: a Kustomize base mirroring the compose topology — same image, four workloads, a migration Job, probes, and deliberately demo-grade single-replica PostGIS/Kafka; `infra/k8s/README.md` has the kind quickstart. [`infra/terraform`](infra/terraform/) is a stub showing the IaC layer's shape: one real module (versioned S3 bucket for static GTFS snapshots), `fmt`/`validate`-gated in CI, nothing applied.
+
+**Logs.** Every service writes single-line `event=… key=value` records to stdout: the poller's `event=feed_polled`, the consumer's `event=trip_updates_consumed`, the projector's `event=positions_recomputed`, and the API's per-request `event=request method=… path=… status=… elapsed_ms=…`. Grep an event name to follow one stage of the pipeline, or grep `_failed` across services to see everything going wrong and nothing else. Start/stop markers (`event=poller_started`, `event=consumer_stopped`, …) bracket every worker's lifetime, so restarts are visible in the same stream.
 
 ## Commit conventions
 

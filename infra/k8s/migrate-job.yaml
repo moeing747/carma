@@ -1,0 +1,34 @@
+# One-shot schema migration, the compose `migrate` service. Compose orders it
+# after PostGIS via depends_on; here the Job simply retries until the database
+# accepts connections (carma-migrate exits non-zero until then). Jobs are
+# immutable: delete it before re-applying a changed spec
+# (`kubectl -n carma delete job carma-migrate`).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: carma-migrate
+spec:
+  backoffLimit: 20
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: carma-migrate
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: migrate
+          image: carma-backend
+          command: [carma-migrate]
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: carma-db
+                  key: DATABASE_URL
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi

@@ -15,6 +15,13 @@ dist/
 # Local environment
 .env
 
+# Terraform: providers, state, and variable values stay local
+# (.terraform.lock.hcl is tracked).
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+
 # Feed snapshots are large; only the trimmed test fixture is tracked.
 *.pb
 !backend/tests/fixtures/*.pb

@@ -5,7 +5,6 @@ import react from '@vitejs/plugin-react'
 // CARMA_API_ORIGIN when running the backend elsewhere.
 const apiOrigin = process.env.CARMA_API_ORIGIN ?? 'http://localhost:8000'
 
-// https://vite.dev/config/
 export default defineConfig({
   plugins: [react()],
   server: {

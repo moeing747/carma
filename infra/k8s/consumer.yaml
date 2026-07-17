@@ -1,0 +1,37 @@
+# Trip-update consumer; see poller.yaml for why the workers carry no probes.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: consumer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: consumer
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: consumer
+    spec:
+      containers:
+        - name: consumer
+          image: carma-backend
+          command: [carma-consume-trip-updates]
+          env:
+            - name: KAFKA_BROKERS
+              valueFrom:
+                configMapKeyRef:
+                  name: carma-config
+                  key: KAFKA_BROKERS
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: carma-db
+                  key: DATABASE_URL
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi

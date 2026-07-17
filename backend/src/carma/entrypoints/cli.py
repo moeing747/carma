@@ -27,6 +27,7 @@ from carma.adapters.postgis_positions import PostgisPositionEngine
 from carma.adapters.postgis_schedule import PostgisTripScheduleRepository
 from carma.application.polling import PollSchedule
 from carma.application.use_cases import ApplyTripDelays, IngestFeedSnapshot, RecomputePositions
+from carma.entrypoints.logs import configure_logging
 
 _DEFAULT_FEED_URL = "https://production.gtfsrt.vbb.de/data"
 
@@ -42,13 +43,6 @@ def _database_url() -> str:
 
 def _kafka_brokers() -> str:
     return os.environ.get("KAFKA_BROKERS", "localhost:9092")
-
-
-def _configure_logging() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    )
 
 
 def _stop_event_on_signals() -> threading.Event:
@@ -110,7 +104,7 @@ def poll_feed() -> None:
         help="poll a single time and exit (non-zero on failure)",
     )
     args = parser.parse_args()
-    _configure_logging()
+    configure_logging()
 
     feed_url = os.environ.get("CARMA_FEED_URL", _DEFAULT_FEED_URL)
     interval = float(os.environ.get("CARMA_POLL_INTERVAL_SECONDS", "30"))
@@ -164,7 +158,7 @@ def consume_trip_updates() -> None:
         prog="carma-consume-trip-updates",
         description="Consume TripDelays from Kafka into PostGIS (latest per trip).",
     ).parse_args()
-    _configure_logging()
+    configure_logging()
 
     brokers = _kafka_brokers()
     ensure_topic(brokers)
@@ -201,7 +195,7 @@ def project_positions() -> None:
         help="run a single projection tick and exit (non-zero on failure)",
     )
     args = parser.parse_args()
-    _configure_logging()
+    configure_logging()
 
     interval = float(os.environ.get("CARMA_PROJECTION_INTERVAL_SECONDS", "5"))
     schedule = PollSchedule(interval_seconds=interval)
